@@ -202,3 +202,39 @@ func TestPlainCell(t *testing.T) {
 		t.Fatalf("plainCell = %q", got)
 	}
 }
+
+const hostile = "@user <img src=x> [x](http://e) <!-- /merge"
+
+func assertInert(t *testing.T, body string) {
+	t.Helper()
+	for _, bad := range []string{"@user", "<img", "](http://e)", "<!-- /merge", "\n/merge"} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("%q 가 활성 상태로 남음:\n%s", bad, body)
+		}
+	}
+	if n := strings.Count(body, "<!--"); n != 1 {
+		t.Fatalf("HTML 주석 시작이 %d개, 마커 1개여야 함:\n%s", n, body)
+	}
+}
+
+func TestUntrustedCodeReviewTextIsNeutralized(t *testing.T) {
+	v := codeView()
+	v.Checks = []model.CheckResult{{Tool: hostile, Passed: false, Summary: hostile}}
+	v.Findings = []model.Finding{{Resource: "r", Severity: hostile, Message: hostile}}
+	assertInert(t, CodeReview(v))
+}
+
+func TestUntrustedPlanTextIsNeutralized(t *testing.T) {
+	v := planView(PlanOK)
+	v.Risks = []string{hostile, "a\n/merge"}
+	assertInert(t, Plan(v))
+
+	f := planView(PlanFailed)
+	f.Failure = hostile
+	assertInert(t, Plan(f))
+
+	f.Failure = "/merge now"
+	if strings.Contains(Plan(f), "\n/merge") {
+		t.Fatal("줄 첫머리 / 가 남음")
+	}
+}

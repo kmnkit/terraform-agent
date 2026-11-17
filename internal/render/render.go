@@ -25,8 +25,9 @@ const (
 	PlanAnalysisFailed PlanStatus = "analysisFailed"
 )
 
-// CodeReviewView is the data for a code review comment. LLM-originated text
-// must already be passed through Sanitize by the caller.
+// CodeReviewView is the data for a code review comment. render neutralizes all
+// untrusted text itself (check output, finding text); Resource stays in a code
+// span and DocRef is emitted as a plain cell.
 type CodeReviewView struct {
 	SHA            string
 	Checks         []model.CheckResult
@@ -36,9 +37,8 @@ type CodeReviewView struct {
 	AnalysisFailed bool
 }
 
-// PlanView is the data for a plan comment. LLM-originated text (Risks,
-// Failure) must already be passed through Sanitize by the caller; RunURL is a
-// trusted value.
+// PlanView is the data for a plan comment. render neutralizes Risks, Failure
+// and other text itself; RunURL is a trusted value and is emitted as is.
 type PlanView struct {
 	Workspace string
 	RunURL    string
@@ -50,15 +50,16 @@ type PlanView struct {
 }
 
 var funcs = template.FuncMap{
-	"marker":  Marker,
-	"short":   shortSHA,
-	"code":    codeSpan,
-	"cell":    plainCell,
-	"oneline": oneLine,
-	"attrs":   attrList,
-	"passed":  passedLabel,
-	"basis":   basisNote,
-	"is":      func(got, want PlanStatus) bool { return got == want },
+	"marker": Marker,
+	"short":  shortSHA,
+	"code":   codeSpan,
+	"cell":   plainCell,
+	"text":   safeCell,
+	"line":   safeLine,
+	"attrs":  attrList,
+	"passed": passedLabel,
+	"basis":  basisNote,
+	"is":     func(got, want PlanStatus) bool { return got == want },
 }
 
 var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker "code" "-"}}
@@ -79,7 +80,7 @@ var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker
 | 도구 | 결과 | 요약 |
 | --- | --- | --- |
 {{range .Checks -}}
-| {{cell .Tool}} | {{passed .Passed}} | {{cell .Summary}} |
+| {{text .Tool}} | {{passed .Passed}} | {{text .Summary}} |
 {{end -}}
 {{else}}
 정적 검사 결과 없음
@@ -89,7 +90,7 @@ var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker
 | 심각도 | 리소스 | 내용 | 문서 |
 | --- | --- | --- | --- |
 {{range .Findings -}}
-| {{cell .Severity}} | {{code .Resource}} | {{cell .Message}} | {{cell .DocRef}} |
+| {{text .Severity}} | {{code .Resource}} | {{text .Message}} | {{cell .DocRef}} |
 {{end -}}
 {{else if .AnalysisFailed}}
 소견을 생성하지 못했습니다.
@@ -116,7 +117,7 @@ workspace: {{code .Workspace}}
 {{- if is .Status "failed"}}
 ### plan 실패
 
-{{oneline .Failure}}
+{{line .Failure}}
 {{else}}
 ### 변경 요약
 
@@ -125,7 +126,7 @@ workspace: {{code .Workspace}}
 | 리소스 | 작업 | 변경 attribute |
 | --- | --- | --- |
 {{range .Summary.Targets -}}
-| {{code .Address}} | {{cell .Action}} | {{attrs .Attrs}} |
+| {{code .Address}} | {{text .Action}} | {{attrs .Attrs}} |
 {{end -}}
 {{end}}
 {{- if .Summary.Truncated}}
@@ -135,7 +136,7 @@ workspace: {{code .Workspace}}
 ### 위험 소견
 
 {{range .Risks -}}
-- {{oneline .}}
+- {{line .}}
 {{end -}}
 {{end}}
 {{- end}}
@@ -190,6 +191,16 @@ var lineBreaks = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
 // oneLine collapses line breaks into single spaces.
 func oneLine(s string) string {
 	return lineBreaks.Replace(s)
+}
+
+// safeCell neutralizes untrusted text, then makes it safe for a table cell.
+func safeCell(s string) string {
+	return plainCell(neutralize(s))
+}
+
+// safeLine neutralizes untrusted text and collapses it to one line.
+func safeLine(s string) string {
+	return oneLine(neutralize(s))
 }
 
 // plainCell makes s safe for a markdown table cell.
