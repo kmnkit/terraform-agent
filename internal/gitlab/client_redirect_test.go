@@ -46,6 +46,37 @@ func TestCrossHostRedirectDropsToken(t *testing.T) {
 	}
 }
 
+// net/http copies the first request's headers on every hop, so once a chain
+// has left the origin the token must stay dropped even when it comes back.
+func TestTokenDropIsStickyAfterLeavingOrigin(t *testing.T) {
+	var finalToken atomic.Value
+	var gl *httptest.Server
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, gl.URL+"/back", http.StatusFound)
+	}))
+	t.Cleanup(evil.Close)
+	gl = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/back") {
+			finalToken.Store(r.Header.Get("PRIVATE-TOKEN"))
+			fmt.Fprint(w, "ok")
+			return
+		}
+		http.Redirect(w, r, evil.URL+"/hop", http.StatusFound)
+	}))
+	t.Cleanup(gl.Close)
+	c := clientFor(t, gl)
+	if _, err := c.JobArtifact(context.Background(), 1, "plan.json"); err != nil {
+		t.Fatal(err)
+	}
+	v, ok := finalToken.Load().(string)
+	if !ok {
+		t.Fatal("redirect chain did not come back to the origin")
+	}
+	if v != "" {
+		t.Fatalf("token sent again after the chain left the origin: %q", v)
+	}
+}
+
 func TestSameHostRedirectKeepsToken(t *testing.T) {
 	var final atomic.Value
 	var gl *httptest.Server

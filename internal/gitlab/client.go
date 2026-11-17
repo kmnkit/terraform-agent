@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -104,8 +105,11 @@ func NewClient(baseURL, tokenFile string, projectID int64, hc *http.Client) (*Cl
 }
 
 // guardRedirect limits redirects, refuses https->http downgrades and strips
-// PRIVATE-TOKEN (which net/http would otherwise copy) when the target is not
-// the configured GitLab origin, e.g. object storage behind artifact downloads.
+// PRIVATE-TOKEN (which net/http would otherwise copy) when the target, or any
+// earlier hop, is not the configured GitLab origin, e.g. object storage behind
+// artifact downloads. net/http copies the first request's headers on every
+// hop, so the drop must be sticky: an off-origin hop could redirect back to
+// the origin at a path of its choosing.
 func guardRedirect(origin *url.URL) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
 		if len(via) >= maxRedirects {
@@ -114,11 +118,17 @@ func guardRedirect(origin *url.URL) func(*http.Request, []*http.Request) error {
 		if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
 			return errors.New("refusing https to http redirect")
 		}
-		if req.URL.Scheme != origin.Scheme || req.URL.Host != origin.Host {
+		if leftOrigin(req, via, origin) {
 			req.Header.Del("PRIVATE-TOKEN")
 		}
 		return nil
 	}
+}
+
+// leftOrigin reports whether req or any earlier hop in via is off origin.
+func leftOrigin(req *http.Request, via []*http.Request, origin *url.URL) bool {
+	off := func(r *http.Request) bool { return r.URL.Scheme != origin.Scheme || r.URL.Host != origin.Host }
+	return off(req) || slices.ContainsFunc(via, off)
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

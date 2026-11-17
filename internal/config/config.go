@@ -30,6 +30,11 @@ const (
 
 var locationPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
+// namePattern limits HCP Terraform organization and workspace names (which
+// HCP itself restricts to letters, digits, "-" and "_"), so they are safe in
+// note markers, status-name comparisons and run URLs.
+var namePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 // Limits are the positive size caps applied to data handed to or from the LLM.
 // LLMOutputBytes caps each LLM-written text (one finding, risk or failure
 // explanation) before it is posted. The plan summary is capped by target
@@ -199,6 +204,9 @@ func validateStrings(c Config) []error {
 	if c.VertexLocation != "" && !locationPattern.MatchString(c.VertexLocation) {
 		errs = append(errs, fmt.Errorf("vertexLocation must match %s, got %q", locationPattern, c.VertexLocation))
 	}
+	if c.TfeOrganization != "" && !namePattern.MatchString(c.TfeOrganization) {
+		errs = append(errs, fmt.Errorf("tfeOrganization must match %s, got %q", namePattern, c.TfeOrganization))
+	}
 	errs = append(errs, validateWorkspaces(c.Workspaces)...)
 	return append(errs, validateAllowlist(c.McpToolAllowlist)...)
 }
@@ -210,6 +218,9 @@ func validateWorkspaces(ws []string) []error {
 	for _, w := range ws {
 		if w == "" {
 			return []error{errors.New("workspaces must not contain empty names")}
+		}
+		if !namePattern.MatchString(w) {
+			return []error{fmt.Errorf("workspaces entries must match %s, got %q", namePattern, w)}
 		}
 	}
 	return nil
