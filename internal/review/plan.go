@@ -34,11 +34,11 @@ const (
 )
 
 // noErrorBlocksNotice is posted for a failed plan whose log has no error block.
-const noErrorBlocksNotice = "plan 로그에서 에러 블록을 찾지 못했습니다. HCP Terraform 실행 화면에서 원인을 확인하세요."
+const noErrorBlocksNotice = "plan ログにエラーブロックが見つかりませんでした。HCP Terraform の実行画面で原因を確認してください。"
 
 // failureAnalysisFailedNotice is posted for a failed plan when the LLM could
 // not explain its error blocks (ruling R25: never the no-change summary).
-const failureAnalysisFailedNotice = "plan이 실패했습니다. 에러 분석을 생성하지 못했습니다. HCP Terraform 실행 화면에서 확인하세요."
+const failureAnalysisFailedNotice = "plan が失敗しました。エラー分析を生成できませんでした。HCP Terraform の実行画面で確認してください。"
 
 // statusSource binds commit status listing to the MR head SHA.
 type statusSource struct {

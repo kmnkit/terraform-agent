@@ -1,12 +1,12 @@
 <!-- tf-review:v1:plan:prod -->
-## Terraform plan 분석
+## Terraform plan 分析
 
 workspace: `prod`
-기준 커밋: `abcdef1`
-실행: https://app.terraform.io/app/org/workspaces/prod/runs/run-abc123
+基準コミット: `abcdef1`
+実行: https://app.terraform.io/app/org/workspaces/prod/runs/run-abc123
 
-### plan 실패
+### plan 失敗
 
-_AI가 작성한 소견으로 참고용입니다._
+_AIが作成した所見です。参考情報として扱ってください。_
 
-provider 인증 오류로 plan이 실패했습니다.
+provider の認証エラーにより plan が失敗しました。

@@ -1,8 +1,8 @@
 <!-- tf-review:v1:plan:prod -->
-## Terraform plan 분석
+## Terraform plan 分析
 
 workspace: `prod`
-기준 커밋: `abcdef1`
-실행: https://app.terraform.io/app/org/workspaces/prod/runs/run-abc123
+基準コミット: `abcdef1`
+実行: https://app.terraform.io/app/org/workspaces/prod/runs/run-abc123
 
-> 대기 시간 안에 plan이 끝나지 않았습니다. 마지막으로 확인한 상태는 실행 중(running)입니다.
+> 待機時間内に plan が完了しませんでした。最後に確認した状態は実行中 (running)です。

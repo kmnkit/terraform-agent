@@ -217,7 +217,7 @@ func TestExecute_StartFailurePostsAnalysisFailedNotes(t *testing.T) {
 		t.Fatalf("notes = %d, want code + plan", len(notes))
 	}
 	for _, b := range notes {
-		if !strings.Contains(b, "분석 실패") || strings.Contains(b, "no-such-mcp") || strings.Contains(b, "tfmcp") {
+		if !strings.Contains(b, "分析失敗") || strings.Contains(b, "no-such-mcp") || strings.Contains(b, "tfmcp") {
 			t.Errorf("unexpected note body:\n%s", b)
 		}
 	}

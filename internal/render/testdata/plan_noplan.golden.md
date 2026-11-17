@@ -1,7 +1,7 @@
 <!-- tf-review:v1:plan:prod -->
-## Terraform plan 분석
+## Terraform plan 分析
 
 workspace: `prod`
-기준 커밋: `abcdef1`
+基準コミット: `abcdef1`
 
-> 이 커밋에 해당하는 plan을 찾지 못했습니다.
+> このコミットに対応する plan が見つかりませんでした。

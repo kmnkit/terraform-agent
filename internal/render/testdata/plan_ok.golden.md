@@ -1,22 +1,22 @@
 <!-- tf-review:v1:plan:prod -->
-## Terraform plan 분석
+## Terraform plan 分析
 
 workspace: `prod`
-기준 커밋: `abcdef1`
-실행: https://app.terraform.io/app/org/workspaces/prod/runs/run-abc123
+基準コミット: `abcdef1`
+実行: https://app.terraform.io/app/org/workspaces/prod/runs/run-abc123
 
-### 변경 요약
+### 変更概要
 
-추가 1 / 변경 1 / 삭제 1 / 교체 1
+追加 1 / 変更 1 / 削除 1 / 置換 1
 
-| 리소스 | 작업 | 변경 attribute |
+| リソース | 操作 | 変更された attribute |
 | --- | --- | --- |
 | `google_compute_instance.web` | replace | `machine_type`, `boot_disk` |
 | `google_storage_bucket.old` | delete |  |
 
-### 위험 소견
+### リスク所見
 
-_AI가 작성한 소견으로 참고용입니다._
+_AIが作成した所見です。参考情報として扱ってください。_
 
-- web 인스턴스가 교체되어 짧은 중단이 발생합니다.
-- old 버킷 삭제는 되돌릴 수 없습니다.
+- web インスタンスが置換され、短時間の停止が発生します。
+- old バケットの削除は元に戻せません。

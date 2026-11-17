@@ -309,10 +309,10 @@ func TestRunCode_NormalPathCreatesOneNoteAndRerunKeepsOne(t *testing.T) {
 		"<!-- tf-review:v1:code:- -->",
 		"버킷 이름 변경은 재생성을 유발합니다",
 		"https://registry.terraform.io/providers/hashicorp/google/6.8.0/docs/resources/google_storage_bucket",
-		"_근거: lock 파일의 provider 버전에 맞는 Terraform 공식 문서._",
+		"_根拠: lock ファイルの provider バージョンに対応する Terraform 公式ドキュメント。_",
 		"| fmt |",
 	)
-	if strings.Contains(body, "변경이 커서 일부만 검토했습니다.") {
+	if strings.Contains(body, "変更が大きいため、一部のみレビューしました。") {
 		t.Errorf("body unexpectedly marked truncated")
 	}
 	if err := h.run(t); err != nil {
@@ -376,7 +376,7 @@ func TestRunCode_ModulesOnlySkipsLLM(t *testing.T) {
 	if h.nar.calls != 0 {
 		t.Errorf("LLM called for a modules-only MR")
 	}
-	mustContain(t, h.store.body(t), "문서 근거가 있는 리소스가 없어 AI 리뷰를 하지 않았습니다.", "_공식 문서 근거를 사용하지 않았습니다._")
+	mustContain(t, h.store.body(t), "ドキュメントの根拠があるリソースがないため、AI レビューは行いませんでした。", "_公式ドキュメントの根拠は使用していません。_")
 }
 
 func TestRunCode_NoTFChangesPostsNothing(t *testing.T) {
@@ -400,7 +400,7 @@ func TestRunCode_CollapsedNewFileIsMarkedTruncated(t *testing.T) {
 	if err := h.run(t); err != nil {
 		t.Fatalf("RunCode: %v", err)
 	}
-	mustContain(t, h.store.body(t), "> 변경이 커서 일부만 검토했습니다.")
+	mustContain(t, h.store.body(t), "> 変更が大きいため、一部のみレビューしました。")
 }
 
 func TestRunCode_AllDiffsCollapsedPostsTruncationWithoutLLM(t *testing.T) {
@@ -412,7 +412,7 @@ func TestRunCode_AllDiffsCollapsedPostsTruncationWithoutLLM(t *testing.T) {
 	if h.nar.calls != 0 {
 		t.Errorf("narrator called %d times, want 0", h.nar.calls)
 	}
-	mustContain(t, h.store.body(t), "> 변경이 커서 일부만 검토했습니다.", "발견 사항 없음")
+	mustContain(t, h.store.body(t), "> 変更が大きいため、一部のみレビューしました。", "指摘事項はありません")
 }
 
 // twoDirHarness has the same address in dirs a/ and b/ with different
@@ -461,7 +461,7 @@ func TestRunCode_ProviderDeclsAndDocsArePerDirectory(t *testing.T) {
 	if !strings.Contains(lineWith(t, body, "A_FINDING"), "/hashicorp/google/6.10.0/") {
 		t.Errorf("a finding lacks its DocRef:\n%s", body)
 	}
-	mustContain(t, body, "문서 근거 없음, 리뷰 생략: `b/google_storage_bucket.x`", "_근거: 버전 제약 조건에 맞춘")
+	mustContain(t, body, "ドキュメントの根拠がないためレビュー対象外: `b/google_storage_bucket.x`", "_根拠: バージョン制約に基づく")
 }
 
 func TestRunCode_NoDocEvidenceSkipsLLMAndListsResources(t *testing.T) {
@@ -482,10 +482,10 @@ func TestRunCode_NoDocEvidenceSkipsLLMAndListsResources(t *testing.T) {
 				t.Errorf("LLM called %d times without doc evidence", h.nar.calls)
 			}
 			mustContain(t, h.store.body(t),
-				"문서 근거가 있는 리소스가 없어 AI 리뷰를 하지 않았습니다.",
-				"문서 근거 없음, 리뷰 생략: `google_storage_bucket.logs`",
-				"| fmt | 통과 | ok |",
-				"_공식 문서 근거를 사용하지 않았습니다._",
+				"ドキュメントの根拠があるリソースがないため、AI レビューは行いませんでした。",
+				"ドキュメントの根拠がないためレビュー対象外: `google_storage_bucket.logs`",
+				"| fmt | 成功 | ok |",
+				"_公式ドキュメントの根拠は使用していません。_",
 			)
 		})
 	}
@@ -535,7 +535,7 @@ func TestRunCode_DiffOverCapIsMarkedTruncated(t *testing.T) {
 	if err := RunCode(context.Background(), d, input.Input{MRIID: 7, SHA: headSHA, PipelineID: 900}); err != nil {
 		t.Fatalf("RunCode: %v", err)
 	}
-	mustContain(t, h.store.body(t), "> 변경이 커서 일부만 검토했습니다.")
+	mustContain(t, h.store.body(t), "> 変更が大きいため、一部のみレビューしました。")
 	if !h.nar.in.DiffTruncated || len(h.nar.in.Resources[0].DiffExcerpt) > 20 {
 		t.Errorf("review input not capped: %+v", h.nar.in)
 	}
@@ -560,7 +560,7 @@ func TestRunCode_CollapsedModifiedDiffIsMarkedTruncated(t *testing.T) {
 	if err := h.run(t); err != nil {
 		t.Fatalf("RunCode: %v", err)
 	}
-	mustContain(t, h.store.body(t), "> 변경이 커서 일부만 검토했습니다.")
+	mustContain(t, h.store.body(t), "> 変更が大きいため、一部のみレビューしました。")
 }
 
 func TestRunCode_VersionNoneShowsNoDocEvidence(t *testing.T) {
@@ -570,7 +570,7 @@ func TestRunCode_VersionNoneShowsNoDocEvidence(t *testing.T) {
 	if err := h.run(t); err != nil {
 		t.Fatalf("RunCode: %v", err)
 	}
-	mustContain(t, h.store.body(t), "_공식 문서 근거를 사용하지 않았습니다._")
+	mustContain(t, h.store.body(t), "_公式ドキュメントの根拠は使用していません。_")
 	if h.docs.calls != 0 {
 		t.Errorf("docs looked up without a version")
 	}
@@ -582,7 +582,7 @@ func TestRunCode_ConstraintBasisUsesLatestVersion(t *testing.T) {
 	if err := h.run(t); err != nil {
 		t.Fatalf("RunCode: %v", err)
 	}
-	mustContain(t, h.store.body(t), "_근거: 버전 제약 조건에 맞춘", "/hashicorp/google/6.10.0/")
+	mustContain(t, h.store.body(t), "_根拠: バージョン制約に基づく", "/hashicorp/google/6.10.0/")
 }
 
 func TestRunCode_LookupFailureFallsBackToNone(t *testing.T) {
@@ -592,7 +592,7 @@ func TestRunCode_LookupFailureFallsBackToNone(t *testing.T) {
 		t.Fatalf("RunCode: %v", err)
 	}
 	body := h.store.body(t)
-	mustContain(t, body, "_공식 문서 근거를 사용하지 않았습니다._")
+	mustContain(t, body, "_公式ドキュメントの根拠は使用していません。_")
 	if strings.Contains(body, "registry.terraform.io") {
 		t.Errorf("failed lookup should leave no DocRef:\n%s", body)
 	}
@@ -606,7 +606,7 @@ func TestRunCode_LLMErrorPostsAnalysisFailedAndReturnsError(t *testing.T) {
 	if err == nil || !errors.Is(err, h.nar.err) {
 		t.Fatalf("err = %v, want wrapped LLM error", err)
 	}
-	mustContain(t, h.store.body(t), "> 분석 실패:", "소견을 생성하지 못했습니다.")
+	mustContain(t, h.store.body(t), "> 分析失敗:", "所見を生成できませんでした。")
 }
 
 func TestRunCode_NoStaticCheckArtifact(t *testing.T) {
@@ -621,7 +621,7 @@ func TestRunCode_NoStaticCheckArtifact(t *testing.T) {
 			if err := h.run(t); err != nil {
 				t.Fatalf("RunCode: %v", err)
 			}
-			mustContain(t, h.store.body(t), "정적 검사 결과 없음")
+			mustContain(t, h.store.body(t), "静的チェックの結果はありません")
 		})
 	}
 }
@@ -640,11 +640,11 @@ func TestRunCode_PipelineJobsErrorIsReturned(t *testing.T) {
 func assertCodeFailed(t *testing.T, h *harness, withChecks bool) {
 	t.Helper()
 	body := h.store.body(t)
-	mustContain(t, body, "> 분석 실패:", "소견을 생성하지 못했습니다.")
+	mustContain(t, body, "> 分析失敗:", "所見を生成できませんでした。")
 	if withChecks {
-		mustContain(t, body, "| fmt | 통과 | ok |")
+		mustContain(t, body, "| fmt | 成功 | ok |")
 	} else {
-		mustContain(t, body, "정적 검사 결과 없음")
+		mustContain(t, body, "静的チェックの結果はありません")
 	}
 	if h.nar.calls != 0 {
 		t.Errorf("LLM called %d times", h.nar.calls)
@@ -693,7 +693,7 @@ func TestRunCode_CancelledRunStillPostsNotice(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	mustContain(t, h.store.body(t), "> 분석 실패:")
+	mustContain(t, h.store.body(t), "> 分析失敗:")
 }
 
 func TestRunCode_PrivateProviderMakesNoMCPCalls(t *testing.T) {
@@ -706,7 +706,7 @@ func TestRunCode_PrivateProviderMakesNoMCPCalls(t *testing.T) {
 	if len(h.mcp.calls) != 0 || h.docs.calls != 0 {
 		t.Errorf("mcp calls = %v, docs calls = %d; want none", h.mcp.calls, h.docs.calls)
 	}
-	mustContain(t, h.store.body(t), "_공식 문서 근거를 사용하지 않았습니다._")
+	mustContain(t, h.store.body(t), "_公式ドキュメントの根拠は使用していません。_")
 }
 
 func TestRunCode_StaleHeadReturnsNil(t *testing.T) {
@@ -752,8 +752,8 @@ func TestRunCode_RemovedResourceListedSeparately(t *testing.T) {
 		t.Fatalf("LLM resources = %+v", res)
 	}
 	body := h.store.body(t)
-	mustContain(t, body, "삭제된 리소스, 문서 조회 대상 아님: `google_pubsub_topic.t`")
-	if strings.Contains(body, "리뷰 생략") {
+	mustContain(t, body, "削除されたリソース (ドキュメント照会の対象外): `google_pubsub_topic.t`")
+	if strings.Contains(body, "レビュー対象外") {
 		t.Errorf("removed resource listed as doc-less:\n%s", body)
 	}
 	if h.docs.calls != 1 {

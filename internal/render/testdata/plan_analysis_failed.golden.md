@@ -1,17 +1,17 @@
 <!-- tf-review:v1:plan:prod -->
-## Terraform plan 분석
+## Terraform plan 分析
 
 workspace: `prod`
-기준 커밋: `abcdef1`
-실행: https://app.terraform.io/app/org/workspaces/prod/runs/run-abc123
+基準コミット: `abcdef1`
+実行: https://app.terraform.io/app/org/workspaces/prod/runs/run-abc123
 
-> 분석 실패: plan 요약만 표시합니다. 위험 분석은 제공되지 않습니다.
+> 分析失敗: plan の概要のみ表示します。リスク分析は提供されません。
 
-### 변경 요약
+### 変更概要
 
-추가 1 / 변경 1 / 삭제 1 / 교체 1
+追加 1 / 変更 1 / 削除 1 / 置換 1
 
-| 리소스 | 작업 | 변경 attribute |
+| リソース | 操作 | 変更された attribute |
 | --- | --- | --- |
 | `google_compute_instance.web` | replace | `machine_type`, `boot_disk` |
 | `google_storage_bucket.old` | delete |  |

@@ -88,98 +88,98 @@ var funcs = template.FuncMap{
 }
 
 // aiLabel marks LLM output as reference only (spec §6).
-const aiLabel = "_AI가 작성한 소견으로 참고용입니다._"
+const aiLabel = "_AIが作成した所見です。参考情報として扱ってください。_"
 
 var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker "code" "-"}}
-## Terraform 코드 리뷰
+## Terraform コードレビュー
 
-기준 커밋: {{code (short .SHA)}}
+基準コミット: {{code (short .SHA)}}
 {{- if .AnalysisFailed}}
 
-> 분석 실패: 자동 분석을 완료하지 못했습니다. 정적 검사 결과만 표시합니다.
+> 分析失敗: 自動分析を完了できませんでした。静的チェックの結果のみ表示します。
 {{- end}}
 {{- if .Truncated}}
 
-> 변경이 커서 일부만 검토했습니다.
+> 変更が大きいため、一部のみレビューしました。
 {{- end}}
 
-### 정적 검사
+### 静的チェック
 {{if .Checks}}
-| 도구 | 결과 | 요약 |
+| ツール | 結果 | 概要 |
 | --- | --- | --- |
 {{range .Checks -}}
 | {{text .Tool}} | {{passed .Passed}} | {{text .Summary}} |
 {{end -}}
 {{else}}
-정적 검사 결과 없음
+静的チェックの結果はありません
 {{end}}
-### 리뷰 소견
+### レビュー所見
 {{if .Findings}}
 {{ailabel}}
 
-| 심각도 | 리소스 | 내용 | 문서 |
+| 重大度 | リソース | 内容 | ドキュメント |
 | --- | --- | --- | --- |
 {{range .Findings -}}
 | {{text .Severity}} | {{code .Resource}} | {{text .Message}} | {{docref .DocRef}} |
 {{end -}}
 {{else if .AnalysisFailed}}
-소견을 생성하지 못했습니다.
+所見を生成できませんでした。
 {{else if .NotReviewed}}
-문서 근거가 있는 리소스가 없어 AI 리뷰를 하지 않았습니다.
+ドキュメントの根拠があるリソースがないため、AI レビューは行いませんでした。
 {{else}}
-발견 사항 없음
+指摘事項はありません
 {{end}}
 {{- if .Skipped}}
-문서 근거 없음, 리뷰 생략: {{attrs .Skipped}}
+ドキュメントの根拠がないためレビュー対象外: {{attrs .Skipped}}
 {{end}}
 {{- if .Removed}}
-삭제된 리소스, 문서 조회 대상 아님: {{attrs .Removed}}
+削除されたリソース (ドキュメント照会の対象外): {{attrs .Removed}}
 {{end}}
 {{basis .VersionBasis}}
 `))
 
 var planTmpl = template.Must(template.New(planKind).Funcs(funcs).Parse(`{{marker "plan" .Workspace}}
-## Terraform plan 분석
+## Terraform plan 分析
 
 workspace: {{code .Workspace}}
-기준 커밋: {{code (short .SHA)}}
+基準コミット: {{code (short .SHA)}}
 {{- if and .RunURL (not (is .Status "unverified")) (not (is .Status "error"))}}
-실행: {{.RunURL}}
+実行: {{.RunURL}}
 {{- end}}
 {{if is .Status "unverified"}}
-> 이 커밋의 plan을 확인하지 못했습니다. 연결된 HCP Terraform run을 이 커밋의 run으로 확인할 수 없습니다.
+> このコミットの plan を確認できませんでした。リンクされた HCP Terraform の run がこのコミットの run であることを確認できません。
 {{- else if is .Status "error"}}
-> 분석 실패: 이 커밋의 plan을 분석하지 못했습니다. HCP Terraform 실행 화면에서 확인하세요.
+> 分析失敗: このコミットの plan を分析できませんでした。HCP Terraform の実行画面で確認してください。
 {{- else if is .Status "noplan"}}
-> 이 커밋에 해당하는 plan을 찾지 못했습니다.
+> このコミットに対応する plan が見つかりませんでした。
 {{- else if is .Status "timeout"}}
-> 대기 시간 안에 plan이 끝나지 않았습니다. 마지막으로 확인한 상태는 {{if .Queued}}대기 중(queued){{else}}실행 중(running){{end}}입니다.
+> 待機時間内に plan が完了しませんでした。最後に確認した状態は{{if .Queued}}待機中 (queued){{else}}実行中 (running){{end}}です。
 {{- else}}
 {{- if is .Status "analysisFailed"}}
-> 분석 실패: plan 요약만 표시합니다. 위험 분석은 제공되지 않습니다.
+> 分析失敗: plan の概要のみ表示します。リスク分析は提供されません。
 {{end}}
 {{- if is .Status "failed"}}
-### plan 실패
+### plan 失敗
 {{if .FailureByAI}}
 {{ailabel}}
 {{end}}
 {{line .Failure}}
 {{else}}
-### 변경 요약
+### 変更概要
 
-추가 {{.Summary.Add}} / 변경 {{.Summary.Change}} / 삭제 {{.Summary.Destroy}} / 교체 {{.Summary.Replace}}
+追加 {{.Summary.Add}} / 変更 {{.Summary.Change}} / 削除 {{.Summary.Destroy}} / 置換 {{.Summary.Replace}}
 {{if .Summary.Targets}}
-| 리소스 | 작업 | 변경 attribute |
+| リソース | 操作 | 変更された attribute |
 | --- | --- | --- |
 {{range .Summary.Targets -}}
 | {{code .Address}} | {{text .Action}} | {{attrs .Attrs}} |
 {{end -}}
 {{end}}
 {{- if .Summary.Truncated}}
-> 대상이 많아 일부만 표시했습니다.
+> 対象が多いため、一部のみ表示しています。
 {{end}}
 {{- if .Risks}}
-### 위험 소견
+### リスク所見
 
 {{ailabel}}
 
@@ -218,19 +218,19 @@ func shortSHA(sha string) string {
 
 func passedLabel(passed bool) string {
 	if passed {
-		return "통과"
+		return "成功"
 	}
-	return "실패"
+	return "失敗"
 }
 
 func basisNote(basis string) string {
 	switch basis {
 	case "lock":
-		return "_근거: lock 파일의 provider 버전에 맞는 Terraform 공식 문서._"
+		return "_根拠: lock ファイルの provider バージョンに対応する Terraform 公式ドキュメント。_"
 	case "constraint":
-		return "_근거: 버전 제약 조건에 맞춘 Terraform 공식 문서. 실제 사용 버전과 다를 수 있습니다._"
+		return "_根拠: バージョン制約に基づく Terraform 公式ドキュメント。実際に使用されるバージョンと異なる場合があります。_"
 	default:
-		return "_공식 문서 근거를 사용하지 않았습니다._"
+		return "_公式ドキュメントの根拠は使用していません。_"
 	}
 }
 

@@ -1,26 +1,26 @@
 <!-- tf-review:v1:code:- -->
-## Terraform 코드 리뷰
+## Terraform コードレビュー
 
-기준 커밋: `abcdef1`
+基準コミット: `abcdef1`
 
-### 정적 검사
+### 静的チェック
 
-| 도구 | 결과 | 요약 |
+| ツール | 結果 | 概要 |
 | --- | --- | --- |
-| terraform validate | 통과 | 통과 |
-| tflint | 실패 | 경고 2건 |
+| terraform validate | 成功 | 成功 |
+| tflint | 失敗 | 警告 2 件 |
 
-### 리뷰 소견
+### レビュー所見
 
-_AI가 작성한 소견으로 참고용입니다._
+_AIが作成した所見です。参考情報として扱ってください。_
 
-| 심각도 | 리소스 | 내용 | 문서 |
+| 重大度 | リソース | 内容 | ドキュメント |
 | --- | --- | --- | --- |
-| error | `google_storage_bucket.logs` | uniform_bucket_level_access가 꺼져 있습니다. | https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_bucket |
-| warning | `google_project_iam_member.admin` | roles/owner 부여는 최소 권한 원칙에 어긋납니다. |  |
+| error | `google_storage_bucket.logs` | uniform_bucket_level_access が無効になっています。 | https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_bucket |
+| warning | `google_project_iam_member.admin` | roles/owner の付与は最小権限の原則に反します。 |  |
 
-문서 근거 없음, 리뷰 생략: `google_compute_network.vpc`, `b/google_dns_record_set.www`
+ドキュメントの根拠がないためレビュー対象外: `google_compute_network.vpc`, `b/google_dns_record_set.www`
 
-삭제된 리소스, 문서 조회 대상 아님: `google_pubsub_topic.old`
+削除されたリソース (ドキュメント照会の対象外): `google_pubsub_topic.old`
 
-_근거: lock 파일의 provider 버전에 맞는 Terraform 공식 문서._
+_根拠: lock ファイルの provider バージョンに対応する Terraform 公式ドキュメント。_

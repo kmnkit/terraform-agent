@@ -252,7 +252,7 @@ func (h *runHarness) assertStartupFailureNotes(t *testing.T) {
 	assertPlanError(t, h.planHarness, "ws-a")
 	for _, n := range h.store.notes {
 		if render.HasMarker(n.Body, "code", "-") {
-			mustContain(t, n.Body, "> 분석 실패:", "| fmt | 통과 | ok |")
+			mustContain(t, n.Body, "> 分析失敗:", "| fmt | 成功 | ok |")
 		}
 		if strings.Contains(n.Body, "tools missing") || strings.Contains(n.Body, "deadline") {
 			t.Errorf("note carries error text:\n%s", n.Body)

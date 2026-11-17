@@ -83,7 +83,7 @@ func buildReviewPrompt(in ReviewInput, nonce string) string {
 	var b strings.Builder
 	b.WriteString(withNonce(reviewInstruction, nonce))
 	if in.DiffTruncated {
-		b.WriteString("\n참고: diff가 잘려 일부만 제공된다.\n")
+		b.WriteString("\n注意: diff は切り詰められており、一部のみ提供される。\n")
 	}
 	for _, r := range in.Resources {
 		b.WriteString("\n" + resourceSection(nonce, r))
@@ -101,7 +101,7 @@ func resourceSection(nonce string, r ReviewResource) string {
 	var b strings.Builder
 	doc := "provided"
 	if r.DocExcerpt == "" {
-		doc = "문서 근거 없음"
+		doc = "ドキュメント根拠なし"
 	}
 	b.WriteString(block(nonce, "resource", fmt.Sprintf("address=%s file=%s attrs=%s doc=%s",
 		r.Address, r.File, strings.Join(r.ChangedAttrs, ","), doc)))
@@ -123,9 +123,9 @@ func BuildPlanRisksPrompt(s model.PlanSummary) string { return buildPlanRisksPro
 func buildPlanRisksPrompt(s model.PlanSummary, nonce string) string {
 	var b strings.Builder
 	b.WriteString(withNonce(planRisksInstruction, nonce))
-	fmt.Fprintf(&b, "\n총계: add=%d change=%d destroy=%d replace=%d\n", s.Add, s.Change, s.Destroy, s.Replace)
+	fmt.Fprintf(&b, "\n合計: add=%d change=%d destroy=%d replace=%d\n", s.Add, s.Change, s.Destroy, s.Replace)
 	if s.Truncated {
-		b.WriteString("참고: 목록이 잘려 일부만 제공된다.\n")
+		b.WriteString("注意: 一覧は切り詰められており、一部のみ提供される。\n")
 	}
 	for _, t := range s.Targets {
 		b.WriteString(block(nonce, "target", fmt.Sprintf("address=%s action=%s attrs=%s", t.Address, t.Action, strings.Join(t.Attrs, ","))))

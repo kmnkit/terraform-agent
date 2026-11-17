@@ -29,7 +29,7 @@ const (
 	maxLLMCalls = 1
 )
 
-// Narrator turns structured review/plan data into Korean prose via an LLM.
+// Narrator turns structured review/plan data into Japanese prose via an LLM.
 type Narrator interface {
 	ReviewFindings(ctx context.Context, in ReviewInput) ([]domain.Finding, error)
 	PlanRisks(ctx context.Context, s domain.PlanSummary) ([]string, error)

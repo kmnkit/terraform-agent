@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/terraform-agent/internal/config"
 	"github.com/terraform-agent/internal/gitlab"
@@ -209,8 +210,8 @@ func TestRunPlan_NormalPathPostsSummaryAndRisks(t *testing.T) {
 	body := h.store.body(t)
 	mustContain(t, body,
 		"<!-- tf-review:v1:plan:net-prod -->",
-		"실행: "+runURLOf(wsProd, "run-OK1"),
-		"추가 0 / 변경 1 / 삭제 0 / 교체 1",
+		"実行: "+runURLOf(wsProd, "run-OK1"),
+		"追加 0 / 変更 1 / 削除 0 / 置換 1",
 		"| `google_sql_user.app` | update | `password` |",
 		"- "+riskText,
 	)
@@ -233,14 +234,14 @@ func TestRunPlan_NoPlanPostsNotice(t *testing.T) {
 	if err := h.runPlan(t); err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	mustContain(t, h.store.body(t), "<!-- tf-review:v1:plan:net-prod -->", "이 커밋에 해당하는 plan을 찾지 못했습니다.")
+	mustContain(t, h.store.body(t), "<!-- tf-review:v1:plan:net-prod -->", "このコミットに対応する plan が見つかりませんでした。")
 	if len(h.pm.calls) != 0 || h.llmCalls() != 0 {
 		t.Errorf("no MCP or LLM call expected: mcp=%v llm=%d", h.pm.calls, h.llmCalls())
 	}
 }
 
 // aiLabelText is render's reference-only label for AI output (spec §6).
-const aiLabelText = "_AI가 작성한 소견으로 참고용입니다._"
+const aiLabelText = "_AIが作成した所見です。参考情報として扱ってください。_"
 
 func TestRunPlan_FailedPlanAnalyzesErrorBlocks(t *testing.T) {
 	h := newPlanHarness(wsProd)
@@ -248,7 +249,7 @@ func TestRunPlan_FailedPlanAnalyzesErrorBlocks(t *testing.T) {
 	if err := h.runPlan(t); err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	mustContain(t, h.store.body(t), "### plan 실패", failText, "실행: "+runURLOf(wsProd, "run-ERR1"), aiLabelText)
+	mustContain(t, h.store.body(t), "### plan 失敗", failText, "実行: "+runURLOf(wsProd, "run-ERR1"), aiLabelText)
 	if len(h.nar.blocksIn) != 1 || !reflect.DeepEqual(h.nar.blocksIn[0], []string{errorBlock}) {
 		t.Errorf("failure input = %q", h.nar.blocksIn)
 	}
@@ -267,7 +268,7 @@ func TestRunPlan_FailedPlanWithoutErrorBlocksSkipsLLM(t *testing.T) {
 	if err := h.runPlan(t); err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	mustContain(t, h.store.body(t), "### plan 실패", noErrorBlocksNotice)
+	mustContain(t, h.store.body(t), "### plan 失敗", noErrorBlocksNotice)
 	if strings.Contains(h.store.body(t), aiLabelText) {
 		t.Errorf("fixed notice labeled as AI output")
 	}
@@ -290,8 +291,8 @@ func TestRunPlan_RunForOtherCommitPostsUnverifiedAndFails(t *testing.T) {
 	if !render.HasMarker(body, "plan", wsProd) || h.store.notes[0].ID != 50 {
 		t.Errorf("unverified notice must replace the workspace note:\n%s", body)
 	}
-	mustContain(t, body, "이 커밋의 plan을 확인하지 못했습니다.")
-	for _, s := range []string{"old analysis", "run-OLD1", "변경 요약"} {
+	mustContain(t, body, "このコミットの plan を確認できませんでした。")
+	for _, s := range []string{"old analysis", "run-OLD1", "変更概要"} {
 		if strings.Contains(body, s) {
 			t.Errorf("unverified body contains %q", s)
 		}
@@ -301,7 +302,7 @@ func TestRunPlan_RunForOtherCommitPostsUnverifiedAndFails(t *testing.T) {
 	}
 }
 
-const planErrorNotice = "> 분석 실패: 이 커밋의 plan을 분석하지 못했습니다."
+const planErrorNotice = "> 分析失敗: このコミットの plan を分析できませんでした。"
 
 // assertPlanError checks ws got the fixed analysis-failed note: no run link,
 // no summary.
@@ -309,7 +310,7 @@ func assertPlanError(t *testing.T, h *planHarness, ws string) {
 	t.Helper()
 	body := h.noteFor(t, ws)
 	mustContain(t, body, planErrorNotice)
-	for _, s := range []string{"실행:", "변경 요약", "app.terraform.io"} {
+	for _, s := range []string{"実行:", "変更概要", "app.terraform.io"} {
 		if strings.Contains(body, s) {
 			t.Errorf("analysis-failed note contains %q:\n%s", s, body)
 		}
@@ -335,14 +336,14 @@ func TestRunPlan_RunOfOtherWorkspacePostsAnalysisFailedAndFails(t *testing.T) {
 }
 
 func TestRunPlan_TimeoutPostsLastPhase(t *testing.T) {
-	for status, want := range map[string]string{"pending": "대기 중(queued)", "planning": "실행 중(running)"} {
+	for status, want := range map[string]string{"pending": "待機中 (queued)", "planning": "実行中 (running)"} {
 		t.Run(status, func(t *testing.T) {
 			h := newPlanHarness(wsProd)
 			h.addRun(wsProd, "run-SLOW1", runDetails("run-SLOW1", status, "plan-1", headSHA, wsProd, tfOrg))
 			if err := h.runPlan(t); err != nil {
 				t.Fatalf("RunPlan: %v", err)
 			}
-			mustContain(t, h.store.body(t), "대기 시간 안에 plan이 끝나지 않았습니다.", want, "실행: "+runURLOf(wsProd, "run-SLOW1"))
+			mustContain(t, h.store.body(t), "待機時間内に plan が完了しませんでした。", want, "実行: "+runURLOf(wsProd, "run-SLOW1"))
 			if strings.Contains(h.store.body(t), status) {
 				t.Errorf("raw HCP status leaked into body")
 			}
@@ -396,7 +397,7 @@ func TestRunPlan_RiskLLMErrorPostsAnalysisFailed(t *testing.T) {
 	if err := h.runPlan(t); !errors.Is(err, llmErr) {
 		t.Fatalf("err = %v, want wrapped LLM error", err)
 	}
-	mustContain(t, h.store.body(t), "> 분석 실패: plan 요약만 표시합니다.", "추가 0 / 변경 1 / 삭제 0 / 교체 1")
+	mustContain(t, h.store.body(t), "> 分析失敗: plan の概要のみ表示します。", "追加 0 / 変更 1 / 削除 0 / 置換 1")
 }
 
 // A failed plan must never look like a no-change plan, even without analysis.
@@ -409,8 +410,8 @@ func TestRunPlan_FailureLLMErrorPostsFailedNotice(t *testing.T) {
 		t.Fatalf("err = %v, want wrapped LLM error", err)
 	}
 	body := h.store.body(t)
-	mustContain(t, body, "### plan 실패", failureAnalysisFailedNotice)
-	for _, s := range []string{"추가 0", "분석 실패: plan 요약만", aiLabelText} {
+	mustContain(t, body, "### plan 失敗", failureAnalysisFailedNotice)
+	for _, s := range []string{"追加 0", "分析失敗: plan の概要のみ", aiLabelText} {
 		if strings.Contains(body, s) {
 			t.Errorf("failed plan body contains %q:\n%s", s, body)
 		}
@@ -493,8 +494,8 @@ func TestRunPlan_UnrecognizedHCPStatusPostsUnverified(t *testing.T) {
 		t.Fatalf("err = %v, want ErrUnrecognizedStatus", err)
 	}
 	body := h.noteFor(t, wsProd)
-	mustContain(t, body, "이 커밋의 plan을 확인하지 못했습니다.")
-	if strings.Contains(body, "찾지 못했습니다") || strings.Contains(body, "run-NEW1") {
+	mustContain(t, body, "このコミットの plan を確認できませんでした。")
+	if strings.Contains(body, "見つかりませんでした") || strings.Contains(body, "run-NEW1") {
 		t.Errorf("misleading or leaking body:\n%s", body)
 	}
 	if strings.Contains(h.logs.String(), "run-NEW1") {
@@ -519,7 +520,7 @@ func TestRunPlan_WaitIsBoundedByDeadline(t *testing.T) {
 	if waited := clock.now.Sub(start); waited > 2*time.Minute {
 		t.Fatalf("waited %v, want at most the 2m left before the reserve", waited)
 	}
-	mustContain(t, h.store.body(t), "대기 시간 안에 plan이 끝나지 않았습니다.")
+	mustContain(t, h.store.body(t), "待機時間内に plan が完了しませんでした。")
 }
 
 func TestRunPlan_NoTimeLeftPostsAnalysisFailed(t *testing.T) {
@@ -547,7 +548,7 @@ func TestRunPlan_CancelledRunStillPostsNotice(t *testing.T) {
 	if err := RunPlan(ctx, h.planDeps(), input.Input{MRIID: 7, SHA: headSHA, PipelineID: 900}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	mustContain(t, h.store.body(t), "> 분석 실패: plan 요약만 표시합니다.")
+	mustContain(t, h.store.body(t), "> 分析失敗: plan の概要のみ表示します。")
 }
 
 // Review Focus 1: plan values, tokens and raw MCP responses never reach the
@@ -619,6 +620,17 @@ func TestRunPlan_LLMTextIsCappedAtLLMOutputBytes(t *testing.T) {
 		line := lineWith(t, h.noteFor(t, ws), "나나나")
 		if strings.Count(line, "나")*3 > 4000 || !strings.Contains(line, "…") {
 			t.Errorf("%s: LLM text not capped at 4000 bytes: %d runes", ws, strings.Count(line, "나"))
+		}
+	}
+}
+
+// The fixed plan notices are posted to GitLab, so they are Japanese.
+func TestPlanNoticesHaveNoHangul(t *testing.T) {
+	for _, s := range []string{noErrorBlocksNotice, failureAnalysisFailedNotice} {
+		for _, r := range s {
+			if unicode.Is(unicode.Hangul, r) {
+				t.Fatalf("Hangul in notice %q", s)
+			}
 		}
 	}
 }

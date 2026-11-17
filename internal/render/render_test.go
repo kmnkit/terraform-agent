@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/terraform-agent/internal/model"
 )
@@ -35,12 +36,12 @@ func codeView() CodeReviewView {
 	return CodeReviewView{
 		SHA: testSHA,
 		Checks: []model.CheckResult{
-			{Tool: "terraform validate", Passed: true, Summary: "통과"},
-			{Tool: "tflint", Passed: false, Summary: "경고 2건"},
+			{Tool: "terraform validate", Passed: true, Summary: "成功"},
+			{Tool: "tflint", Passed: false, Summary: "警告 2 件"},
 		},
 		Findings: []model.Finding{
-			{Resource: "google_storage_bucket.logs", Severity: "error", Message: "uniform_bucket_level_access가 꺼져 있습니다.", DocRef: "https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_bucket"},
-			{Resource: "google_project_iam_member.admin", Severity: "warning", Message: "roles/owner 부여는 최소 권한 원칙에 어긋납니다.", DocRef: ""},
+			{Resource: "google_storage_bucket.logs", Severity: "error", Message: "uniform_bucket_level_access が無効になっています。", DocRef: "https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_bucket"},
+			{Resource: "google_project_iam_member.admin", Severity: "warning", Message: "roles/owner の付与は最小権限の原則に反します。", DocRef: ""},
 		},
 		VersionBasis: "lock",
 	}
@@ -59,7 +60,7 @@ func planView(status PlanStatus) PlanView {
 				{Address: "google_storage_bucket.old", Action: "delete"},
 			},
 		},
-		Risks: []string{"web 인스턴스가 교체되어 짧은 중단이 발생합니다.", "old 버킷 삭제는 되돌릴 수 없습니다."},
+		Risks: []string{"web インスタンスが置換され、短時間の停止が発生します。", "old バケットの削除は元に戻せません。"},
 	}
 }
 
@@ -67,7 +68,7 @@ func TestGoldenComments(t *testing.T) {
 	failed := planView(PlanFailed)
 	failed.Summary = model.PlanSummary{}
 	failed.Risks = nil
-	failed.Failure = "provider 인증 오류로 plan이 실패했습니다."
+	failed.Failure = "provider の認証エラーにより plan が失敗しました。"
 	failed.FailureByAI = true
 
 	noPlan := PlanView{Workspace: "prod", SHA: testSHA, Status: PlanNoPlan}
@@ -139,7 +140,7 @@ func TestPlanUnverifiedAndErrorNeverShowRunURLOrSummary(t *testing.T) {
 	for _, status := range []PlanStatus{PlanUnverified, PlanError} {
 		v := planView(status)
 		body := Plan(v)
-		for _, s := range []string{v.RunURL, "실행:", "변경 요약", v.Risks[0]} {
+		for _, s := range []string{v.RunURL, "実行:", "変更概要", v.Risks[0]} {
 			if strings.Contains(body, s) {
 				t.Errorf("%s body contains %q:\n%s", status, s, body)
 			}
@@ -147,7 +148,7 @@ func TestPlanUnverifiedAndErrorNeverShowRunURLOrSummary(t *testing.T) {
 	}
 }
 
-const wantAILabel = "_AI가 작성한 소견으로 참고용입니다._"
+const wantAILabel = "_AIが作成した所見です。参考情報として扱ってください。_"
 
 // Spec §6: AI output is labeled as reference only, and only where it appears.
 func TestAIOutputIsLabeledReferenceOnly(t *testing.T) {
@@ -180,7 +181,7 @@ func TestSkippedAddressesAreCodeSpans(t *testing.T) {
 	v := codeView()
 	v.Skipped = []string{"module.a[\"x|y`z\"]", "@alice\n/merge"}
 	body := CodeReview(v)
-	want := "문서 근거 없음, 리뷰 생략: ``module.a[\"x\\|y`z\"]``, `@alice /merge`"
+	want := "ドキュメントの根拠がないためレビュー対象外: ``module.a[\"x\\|y`z\"]``, `@alice /merge`"
 	if !strings.Contains(body, want+"\n") {
 		t.Fatalf("skipped line not escaped as code spans:\n%s", body)
 	}
@@ -318,7 +319,7 @@ func TestFailureLineBreaksCannotExposeQuickAction(t *testing.T) {
 		v := planView(PlanFailed)
 		v.Failure = failure
 		body := Plan(v)
-		section := body[strings.Index(body, "### plan 실패"):]
+		section := body[strings.Index(body, "### plan 失敗"):]
 		for _, line := range strings.Split(section, "\n")[1:] {
 			if strings.HasPrefix(strings.TrimLeft(line, " \t"), "/") {
 				t.Fatalf("Failure %q: 줄 첫머리 / 가 남음:\n%s", failure, body)
@@ -361,6 +362,37 @@ func TestDocRefTrustedOnlyForRegistryURL(t *testing.T) {
 		}
 		if !strings.HasSuffix(row, tc.want) {
 			t.Errorf("%s: row %q does not end with %q", tc.name, row, tc.want)
+		}
+	}
+}
+
+// Every fixed text posted to GitLab is Japanese: with Hangul-free data, no
+// variant may contain Hangul.
+func TestFixedTextHasNoHangul(t *testing.T) {
+	code := codeView()
+	code.Checks = []model.CheckResult{{Tool: "fmt", Passed: true, Summary: "ok"}, {Tool: "tflint", Passed: false, Summary: "ng"}}
+	code.Findings[0].Message, code.Findings[1].Message = "m1", "m2"
+	code.Truncated, code.Skipped, code.Removed = true, []string{"a.b"}, []string{"c.d"}
+	failedCode := code
+	failedCode.Findings, failedCode.AnalysisFailed = nil, true
+	notReviewed := CodeReviewView{SHA: testSHA, NotReviewed: true}
+	bodies := []string{CodeReview(code), CodeReview(failedCode), CodeReview(notReviewed)}
+	for _, basis := range []string{"lock", "constraint", "none"} {
+		bodies = append(bodies, CodeReview(CodeReviewView{SHA: testSHA, VersionBasis: basis}))
+	}
+	for _, status := range []PlanStatus{PlanOK, PlanFailed, PlanNoPlan, PlanAnalysisFailed, PlanTimeout, PlanUnverified, PlanError} {
+		for _, queued := range []bool{true, false} {
+			v := planView(status)
+			v.Risks, v.Failure, v.FailureByAI, v.Queued = []string{"r"}, "f", true, queued
+			v.Summary.Truncated = true
+			bodies = append(bodies, Plan(v))
+		}
+	}
+	for _, body := range bodies {
+		for _, r := range body {
+			if unicode.Is(unicode.Hangul, r) {
+				t.Fatalf("Hangul %q in fixed text:\n%s", r, body)
+			}
 		}
 	}
 }

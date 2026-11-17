@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/terraform-agent/internal/model"
 )
@@ -26,8 +27,8 @@ func TestBuildReviewPrompt_ContainsInputs(t *testing.T) {
 	for _, want := range []string{
 		"google_storage_bucket.logs", "main.tf", "location", "+ location = \"ASIA\"",
 		"DOC-EXCERPT-SENTINEL", "CHECK-SUMMARY-SENTINEL", "tflint",
-		"terraform-google-modules/network/google", "9.0.0", "한국어", "문서 발췌로 뒷받침되지 않는 소견은 쓰지 않는다",
-		"데이터", "<<<",
+		"terraform-google-modules/network/google", "9.0.0", "日本語", "ドキュメント抜粋で裏付けられない所見は書かない",
+		"データ", "<<<",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt lacks %q", want)
@@ -38,7 +39,7 @@ func TestBuildReviewPrompt_ContainsInputs(t *testing.T) {
 func TestBuildReviewPrompt_NoDocSaysNoEvidence(t *testing.T) {
 	in := sampleInput()
 	in.Resources[0].DocExcerpt = ""
-	if !strings.Contains(BuildReviewPrompt(in), "문서 근거 없음") {
+	if !strings.Contains(BuildReviewPrompt(in), "ドキュメント根拠なし") {
 		t.Error("expected no-evidence marker")
 	}
 }
@@ -154,7 +155,7 @@ func TestBuildPlanRisksPrompt_AddressesActionsAttrNamesOnly(t *testing.T) {
 		{Address: "google_sql_database_instance.main", Action: "delete", Attrs: []string{"deletion_protection"}},
 	}}
 	p := BuildPlanRisksPrompt(s)
-	for _, want := range []string{"google_sql_database_instance.main", "delete", "deletion_protection", "한국어"} {
+	for _, want := range []string{"google_sql_database_instance.main", "delete", "deletion_protection", "日本語"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
@@ -163,7 +164,7 @@ func TestBuildPlanRisksPrompt_AddressesActionsAttrNamesOnly(t *testing.T) {
 
 func TestBuildPlanFailurePrompt(t *testing.T) {
 	p := BuildPlanFailurePrompt([]string{"Error: quota exceeded", "Error: api disabled"})
-	for _, want := range []string{"Error: quota exceeded", "Error: api disabled", "한국어", "데이터"} {
+	for _, want := range []string{"Error: quota exceeded", "Error: api disabled", "日本語", "データ"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
@@ -239,5 +240,24 @@ func TestParseFailure(t *testing.T) {
 	}
 	if _, err := ParseFailure(`{"analysis":"  "}`); err == nil {
 		t.Error("empty analysis: want error")
+	}
+}
+
+// Prompts carry no Korean: the model is told to write Japanese.
+func TestPromptsHaveNoHangul(t *testing.T) {
+	prompts := []string{
+		BuildReviewPrompt(sampleInput()),
+		BuildPlanRisksPrompt(model.PlanSummary{Truncated: true, Targets: []model.Target{{Address: "a.b", Action: "delete"}}}),
+		BuildPlanFailurePrompt([]string{"Error: x"}),
+	}
+	noDoc := sampleInput()
+	noDoc.Resources[0].DocExcerpt = ""
+	prompts = append(prompts, BuildReviewPrompt(noDoc))
+	for _, p := range prompts {
+		for _, r := range p {
+			if unicode.Is(unicode.Hangul, r) {
+				t.Fatalf("Hangul %q in prompt:\n%s", r, p)
+			}
+		}
 	}
 }

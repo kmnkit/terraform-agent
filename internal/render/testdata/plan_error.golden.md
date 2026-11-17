@@ -1,7 +1,7 @@
 <!-- tf-review:v1:plan:prod -->
-## Terraform plan 분석
+## Terraform plan 分析
 
 workspace: `prod`
-기준 커밋: `abcdef1`
+基準コミット: `abcdef1`
 
-> 분석 실패: 이 커밋의 plan을 분석하지 못했습니다. HCP Terraform 실행 화면에서 확인하세요.
+> 分析失敗: このコミットの plan を分析できませんでした。HCP Terraform の実行画面で確認してください。
