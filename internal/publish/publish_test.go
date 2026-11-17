@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/terraform-agent/internal/gitlab"
 	"github.com/terraform-agent/internal/render"
@@ -32,10 +33,18 @@ type fakeStore struct {
 	sha    string
 	writes int
 
-	listBarrier      *sync.WaitGroup // first barrierLeft ListNotes calls rendezvous after snapshotting
-	barrierLeft      int
-	vanishOnUpdateID int64 // delete this note just before its first update
+	barrierNeed     int           // first barrierNeed ListNotes calls rendezvous after snapshotting
+	barrierArrived  int           // callers that have snapshotted
+	barrierRelease  chan struct{} // closed once barrierNeed callers arrived
+	barrierTimedOut bool          // a caller gave up waiting (test must fail)
+
+	vanishOnUpdateID    int64        // delete this note just before its first update, then 404
+	deleteAfterUpdateID int64        // delete this note right after a successful update
+	injectOnCreate      *gitlab.Note // add this note (a concurrent run's) right after our create
+	purgeAfterWrite     bool         // every create/update is followed by deleting all notes
 }
+
+const barrierWait = 5 * time.Second
 
 func newFake(notes ...gitlab.Note) *fakeStore {
 	f := &fakeStore{sha: headSH, notes: notes, nextID: 100}
@@ -53,15 +62,23 @@ func (f *fakeStore) MergeRequest(context.Context, int) (gitlab.MergeRequest, err
 func (f *fakeStore) ListNotes(context.Context, int) ([]gitlab.Note, error) {
 	f.mu.Lock()
 	snap := append([]gitlab.Note(nil), f.notes...)
-	var barrier *sync.WaitGroup
-	if f.barrierLeft > 0 {
-		f.barrierLeft--
-		barrier = f.listBarrier
+	wait := f.barrierArrived < f.barrierNeed
+	if wait {
+		f.barrierArrived++
+		if f.barrierArrived == f.barrierNeed {
+			close(f.barrierRelease)
+		}
 	}
+	release := f.barrierRelease
 	f.mu.Unlock()
-	if barrier != nil {
-		barrier.Done()
-		barrier.Wait()
+	if wait {
+		select {
+		case <-release:
+		case <-time.After(barrierWait):
+			f.mu.Lock()
+			f.barrierTimedOut = true
+			f.mu.Unlock()
+		}
 	}
 	return snap, nil
 }
@@ -73,6 +90,13 @@ func (f *fakeStore) CreateNote(_ context.Context, _ int, body string) (gitlab.No
 	f.nextID++
 	n := gitlab.Note{ID: f.nextID, Body: body, AuthorID: botID}
 	f.notes = append(f.notes, n)
+	if f.injectOnCreate != nil {
+		f.notes = append(f.notes, *f.injectOnCreate)
+		f.injectOnCreate = nil
+	}
+	if f.purgeAfterWrite {
+		f.notes = nil
+	}
 	return n, nil
 }
 
@@ -87,6 +111,12 @@ func (f *fakeStore) UpdateNote(_ context.Context, _ int, id int64, body string) 
 	for i := range f.notes {
 		if f.notes[i].ID == id {
 			f.notes[i].Body = body
+			if id == f.deleteAfterUpdateID {
+				f.removeLocked(id)
+			}
+			if f.purgeAfterWrite {
+				f.notes = nil
+			}
 			return nil
 		}
 	}
@@ -221,6 +251,47 @@ func TestUpsertRecreatesWhenNoteVanishes(t *testing.T) {
 	}
 }
 
+func TestUpsertRedoesWhenKeptNoteVanishesDuringConverge(t *testing.T) {
+	// A concurrent run's lower-ID note (50) shows up after our create (101),
+	// then is deleted before we can update it: we must not delete our own note.
+	f := newFake()
+	f.injectOnCreate = &gitlab.Note{ID: 50, Body: markedBody("other"), AuthorID: botID}
+	f.vanishOnUpdateID = 50
+	body := markedBody("new")
+	if err := Upsert(context.Background(), f, iid, headSH, target, body); err != nil {
+		t.Fatal(err)
+	}
+	got := f.botMarked()
+	if len(got) != 1 || got[0].Body != body {
+		t.Fatalf("notes = %+v", got)
+	}
+}
+
+func TestUpsertRedoesWhenNoteVanishesAfterWrite(t *testing.T) {
+	f := newFake(gitlab.Note{ID: 4, Body: markedBody("old"), AuthorID: botID})
+	f.deleteAfterUpdateID = 4
+	body := markedBody("new")
+	if err := Upsert(context.Background(), f, iid, headSH, target, body); err != nil {
+		t.Fatal(err)
+	}
+	got := f.botMarked()
+	if len(got) != 1 || got[0].Body != body || got[0].ID == 4 {
+		t.Fatalf("notes = %+v", got)
+	}
+}
+
+func TestUpsertGivesUpWhenNoteKeepsVanishing(t *testing.T) {
+	f := newFake()
+	f.purgeAfterWrite = true
+	err := Upsert(context.Background(), f, iid, headSH, target, markedBody("x"))
+	if err == nil {
+		t.Fatal("want error when the note never sticks")
+	}
+	if f.writes > 2*maxAttempts {
+		t.Fatalf("unbounded retries: %d writes", f.writes)
+	}
+}
+
 func TestUpsertConcurrentRunsConverge(t *testing.T) {
 	for _, tc := range []struct{ name, a, b string }{
 		{"same body", markedBody("v"), markedBody("v")},
@@ -228,9 +299,8 @@ func TestUpsertConcurrentRunsConverge(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake()
-			f.listBarrier = &sync.WaitGroup{}
-			f.listBarrier.Add(2) // both first lists happen before either create
-			f.barrierLeft = 2
+			f.barrierNeed = 2 // both first lists happen before either create
+			f.barrierRelease = make(chan struct{})
 			var wg sync.WaitGroup
 			errs := make([]error, 2)
 			for i, b := range []string{tc.a, tc.b} {
@@ -245,6 +315,9 @@ func TestUpsertConcurrentRunsConverge(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+			}
+			if f.barrierTimedOut {
+				t.Fatal("barrier never released: interleaving was not forced")
 			}
 			got := f.botMarked()
 			if len(got) != 1 {

@@ -20,6 +20,7 @@ const (
 	perPage      = 100
 	maxPages     = 50
 	maxAttempts  = 3
+	maxRedirects = 10
 	maxBodyBytes = 16 << 20
 	baseBackoff  = time.Second
 	maxBackoff   = 30 * time.Second
@@ -87,13 +88,37 @@ func NewClient(baseURL, tokenFile string, projectID int64, hc *http.Client) (*Cl
 	if token == "" {
 		return nil, errors.New("gitlab: token file is empty")
 	}
+	origin, err := url.Parse(baseURL)
+	if err != nil || origin.Host == "" {
+		return nil, errors.New("gitlab: invalid base URL")
+	}
+	guarded := *hc // shallow copy: the caller's client is left untouched
+	guarded.CheckRedirect = guardRedirect(origin)
 	return &Client{
 		base:      strings.TrimRight(baseURL, "/"),
 		token:     token,
 		projectID: projectID,
-		hc:        hc,
+		hc:        &guarded,
 		sleep:     sleepCtx,
 	}, nil
+}
+
+// guardRedirect limits redirects, refuses https->http downgrades and strips
+// PRIVATE-TOKEN (which net/http would otherwise copy) when the target is not
+// the configured GitLab origin, e.g. object storage behind artifact downloads.
+func guardRedirect(origin *url.URL) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+		if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
+			return errors.New("refusing https to http redirect")
+		}
+		if req.URL.Scheme != origin.Scheme || req.URL.Host != origin.Host {
+			req.Header.Del("PRIVATE-TOKEN")
+		}
+		return nil
+	}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

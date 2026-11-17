@@ -12,6 +12,9 @@ import (
 	"github.com/terraform-agent/internal/render"
 )
 
+// maxAttempts bounds write+converge redo rounds when notes vanish mid-run.
+const maxAttempts = 2
+
 // ErrStale means the MR head moved past the commit the review was made for.
 var ErrStale = errors.New("publish: merge request head changed")
 
@@ -52,16 +55,29 @@ func Upsert(ctx context.Context, store NoteStore, mrIID int, wantSHA string, tar
 	if err != nil {
 		return fmt.Errorf("publish: get current user: %w", err)
 	}
-	mine, err := botNotes(ctx, store, mrIID, bot.ID, target)
-	if err != nil {
-		return err
+	for range maxAttempts {
+		err := writeAndConverge(ctx, store, mrIID, bot.ID, target, body)
+		if !errors.Is(err, errVanished) {
+			return err
+		}
 	}
-	written, err := write(ctx, store, mrIID, mine, body)
-	if err != nil {
-		return err
-	}
-	return converge(ctx, store, mrIID, bot.ID, target, body, written)
+	return fmt.Errorf("publish: note kept vanishing after %d attempts", maxAttempts)
 }
+
+func writeAndConverge(ctx context.Context, store NoteStore, iid int, botID int64, target Target, body string) error {
+	mine, err := botNotes(ctx, store, iid, botID, target)
+	if err != nil {
+		return err
+	}
+	written, err := write(ctx, store, iid, mine, body)
+	if err != nil {
+		return err
+	}
+	return converge(ctx, store, iid, botID, target, body, written)
+}
+
+// errVanished means a note we depend on was deleted mid-run; redo the write.
+var errVanished = errors.New("publish: note vanished mid-run")
 
 // write updates the lowest-ID note, or creates one when none exists or the
 // note vanished mid-run. It returns the ID of the note that now holds body.
@@ -83,20 +99,26 @@ func write(ctx context.Context, store NoteStore, iid int, mine []gitlab.Note, bo
 }
 
 // converge re-lists, makes the lowest-ID bot marker note carry body, and
-// deletes every other bot marker note. 404s are tolerated: another run may
-// have deleted the same note.
+// deletes every other bot marker note. Only a DELETE 404 is tolerated (another
+// run may have deleted the same note); an empty list or an update 404 returns
+// errVanished so the caller redoes the write.
 func converge(ctx context.Context, store NoteStore, iid int, botID int64, target Target, body string, written int64) error {
 	mine, err := botNotes(ctx, store, iid, botID, target)
 	if err != nil {
 		return err
 	}
 	if len(mine) == 0 {
-		return errors.New("publish: note disappeared after write")
+		return errVanished
 	}
 	keep := mine[0].ID
 	if keep != written {
+		// No duplicate is deleted before the kept note holds body, so a 404
+		// here must not fall through to deleting the note we wrote.
 		err := store.UpdateNote(ctx, iid, keep, body)
-		if err != nil && !errors.Is(err, gitlab.ErrNotFound) {
+		if errors.Is(err, gitlab.ErrNotFound) {
+			return errVanished
+		}
+		if err != nil {
 			return fmt.Errorf("publish: update kept note: %w", err)
 		}
 	}
