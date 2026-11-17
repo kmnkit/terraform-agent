@@ -34,7 +34,8 @@ func TestLoad_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.AllowedGitlabProjectID != 4242 || c.TfeOrganization != "acme" || c.Model != "gemini-3.8-flash" {
+	if c.AllowedGitlabProjectID != 4242 || c.TfeOrganization != "acme" || c.Model != "gemini-3.8-flash" ||
+		c.VertexProject != "acme-prod" || c.VertexLocation != "asia-northeast3" {
 		t.Errorf("unexpected config: %+v", c)
 	}
 	if len(c.Workspaces) != 2 || c.McpToolAllowlist["searchProviderDocs"] != "search_provider_docs" {
@@ -131,6 +132,9 @@ func TestLoad_RejectsBadStrings(t *testing.T) {
 		{"allowlistValue", `"search_provider_docs"`, `""`, "mcpToolAllowlist"},
 		{"model", `"model": "gemini-3.8-flash"`, `"model": ""`, "model"},
 		{"modelLatest", `"gemini-3.8-flash"`, `"gemini-flash-latest"`, "model"},
+		{"vertexProject", `"vertexProject": "acme-prod"`, `"vertexProject": ""`, "vertexProject"},
+		{"vertexLocationEmpty", `"vertexLocation": "asia-northeast3"`, `"vertexLocation": ""`, "vertexLocation"},
+		{"vertexLocationPattern", `"asia-northeast3"`, `"https://evil.example/"`, "vertexLocation"},
 		{"tfeToken", `"tfe": "/secrets/tfe/token"`, `"tfe": ""`, "tokenFiles"},
 		{"gitlabToken", `"gitlab": "/secrets/gitlab/token"`, `"gitlab": ""`, "tokenFiles"},
 	}

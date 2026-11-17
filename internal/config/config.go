@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -19,6 +20,8 @@ const (
 	// DefaultGitlabBaseURL is used when gitlabBaseURL is empty.
 	DefaultGitlabBaseURL = "https://gitlab.com"
 )
+
+var locationPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // Limits are the positive size caps applied to data handed to or from the LLM.
 type Limits struct {
@@ -50,6 +53,8 @@ type Config struct {
 	McpBinaryPath          string            `json:"mcpBinaryPath"`
 	McpToolAllowlist       map[string]string `json:"mcpToolAllowlist"`
 	Model                  string            `json:"model"`
+	VertexProject          string            `json:"vertexProject"`
+	VertexLocation         string            `json:"vertexLocation"`
 	Limits                 Limits            `json:"limits"`
 	Waits                  Waits             `json:"waits"`
 	TokenFiles             TokenFiles        `json:"tokenFiles"`
@@ -140,6 +145,8 @@ func validateStrings(c Config) []error {
 		"tfeOrganization":   c.TfeOrganization,
 		"mcpBinaryPath":     c.McpBinaryPath,
 		"model":             c.Model,
+		"vertexProject":     c.VertexProject,
+		"vertexLocation":    c.VertexLocation,
 		"tokenFiles.tfe":    c.TokenFiles.TFE,
 		"tokenFiles.gitlab": c.TokenFiles.GitLab,
 	}
@@ -150,6 +157,9 @@ func validateStrings(c Config) []error {
 	}
 	if strings.HasSuffix(c.Model, "-latest") {
 		errs = append(errs, fmt.Errorf("model must not use a -latest alias, got %q", c.Model))
+	}
+	if c.VertexLocation != "" && !locationPattern.MatchString(c.VertexLocation) {
+		errs = append(errs, fmt.Errorf("vertexLocation must match %s, got %q", locationPattern, c.VertexLocation))
 	}
 	errs = append(errs, validateWorkspaces(c.Workspaces)...)
 	return append(errs, validateAllowlist(c.McpToolAllowlist)...)

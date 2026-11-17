@@ -7,6 +7,8 @@
   "mcpBinaryPath": "/usr/local/bin/terraform-mcp-server",
   "mcpToolAllowlist": {"searchProviderDocs": "search_provider_docs"},
   "model": "gemini-3.8-flash",
+  "vertexProject": "acme-prod",
+  "vertexLocation": "asia-northeast3",
   "limits": {"diffBytes": 100000, "docsBytes": 50000, "planSummaryBytes": 20000, "llmOutputBytes": 8000},
   "waits": {"initial": "30m", "total": "35m"},
   "tokenFiles": {"tfe": "/secrets/tfe/token", "gitlab": "/secrets/gitlab/token"}
