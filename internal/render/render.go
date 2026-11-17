@@ -2,9 +2,10 @@ package render
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
 	"strings"
 	"text/template"
-	"unicode"
 
 	"github.com/terraform-agent/internal/model"
 )
@@ -195,19 +196,31 @@ func oneLine(s string) string {
 	return lineBreaks.Replace(s)
 }
 
-const trustedDocPrefix = "https://registry.terraform.io/"
+const trustedDocHost = "registry.terraform.io"
 
-// docRefCell renders DocRef as a plain link only when it is a well-formed
-// registry URL; anything else may come from the LLM and is neutralized.
+var docPath = regexp.MustCompile(`^/[A-Za-z0-9/._-]+$`)
+
+// docRefCell renders DocRef as a plain link only when it passes the registry
+// allowlist; anything else may come from the LLM and is neutralized.
 func docRefCell(s string) string {
-	if strings.HasPrefix(s, trustedDocPrefix) && !strings.ContainsFunc(s, unsafeInURL) {
+	if isRegistryURL(s) {
 		return plainCell(s)
 	}
 	return safeCell(s)
 }
 
-func unsafeInURL(r rune) bool {
-	return unicode.IsSpace(r) || strings.ContainsRune("<>()[]", r)
+// isRegistryURL allows only https://registry.terraform.io/<simple path>: no
+// user info, port, query, fragment or escapes.
+func isRegistryURL(s string) bool {
+	if strings.ContainsAny(s, "?#") {
+		return false
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "https" && u.Host == trustedDocHost && u.User == nil &&
+		u.Opaque == "" && docPath.MatchString(u.EscapedPath()) && u.Path == u.EscapedPath()
 }
 
 // safeCell neutralizes untrusted text, then makes it safe for a table cell.

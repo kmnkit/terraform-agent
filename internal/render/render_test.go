@@ -266,6 +266,14 @@ func TestDocRefTrustedOnlyForRegistryURL(t *testing.T) {
 		{"other host neutralized", "https://evil.example/x", "|  |"},
 		{"registry prefix with link syntax", good + ")[x](http://e)", "| )x |"},
 		{"registry prefix with space", good + " @user", "|  @\u200buser |"},
+		{"query rejected", good + "?x=1", "|  |"},
+		{"fragment rejected", good + "#frag", "|  |"},
+		{"at sign in path rejected", good + "/a@b", "|  |"},
+		{"percent in path rejected", good + "/a%40b", "|  |"},
+		{"user info rejected", "https://registry.terraform.io@evil.example/x", "|  |"},
+		{"host suffix rejected", "https://registry.terraform.io.evil.example/x", "|  |"},
+		{"port rejected", "https://registry.terraform.io:8443/x", "|  |"},
+		{"http scheme rejected", "http://registry.terraform.io/x", "|  |"},
 		{"registry prefix with angle", good + "<img src=x>", "|  |"},
 	}
 	for _, tc := range tests {

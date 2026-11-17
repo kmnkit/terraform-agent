@@ -18,10 +18,11 @@ var (
 	mdRefImage  = regexp.MustCompile(`!\[[^\]]*\]\[[^\]]*\]`)
 	mdRefLink   = regexp.MustCompile(`\[([^\]]*)\]\[[^\]]*\]`)
 	mdRefDef    = regexp.MustCompile(`(?m)^[ \t]{0,3}\[[^\]]+\]:[ \t]*\S.*$`)
-	bareURL     = regexp.MustCompile(`https?://[^\s<>)\]]*`)
+	bareURL     = regexp.MustCompile(`(?i)https?://[^\s<>)\]]*`)
 	ampersand   = regexp.MustCompile(`&(amp;|lt;|gt;|#91;|#93;)?`)
 	wwwHost     = regexp.MustCompile(`(?i)www\.\x{200b}?`)
-	scheme      = regexp.MustCompile(`(?i)\b(https?|ftp|mailto):\x{200b}?`)
+	urlScheme   = regexp.MustCompile(`:\x{200b}?//`)
+	mailScheme  = regexp.MustCompile(`(?i)\b(mailto|xmpp):\x{200b}?`)
 	htmlTag     = regexp.MustCompile(`<[!?/A-Za-z][^>]*>`)
 	mention     = regexp.MustCompile(`@(\w)`)
 	lineSlash   = regexp.MustCompile(`(?m)^([ \t]*)/`)
@@ -57,12 +58,16 @@ func neutralize(text string) string {
 // entities, so no inline, reference or shortcut link can be built from text.
 var bracketEscaper = strings.NewReplacer("[", "&#91;", "]", "&#93;", "<", "&lt;", ">", "&gt;")
 
-// breakAutolinks inserts a zero-width space after "www." and after http,
-// https, ftp and mailto schemes so GitLab does not autolink them. Existing
-// zero-width spaces are not doubled, which keeps neutralize idempotent.
+// breakAutolinks inserts a zero-width space after "www.", between ":" and
+// "//" of every scheme://, and after mailto: and xmpp:, so GitLab does not
+// autolink them. Breaking every "://" (no scheme list, no word boundary)
+// covers schemes GitLab accepts such as sftp or ssh. Existing zero-width
+// spaces are not doubled, which keeps neutralize idempotent. The bareURL strip
+// stays (now case-insensitive) because it removes http(s) links outright.
 func breakAutolinks(text string) string {
 	text = wwwHost.ReplaceAllString(text, "www."+zeroWidthSpace)
-	return scheme.ReplaceAllString(text, "${1}:"+zeroWidthSpace)
+	text = urlScheme.ReplaceAllString(text, ":"+zeroWidthSpace+"//")
+	return mailScheme.ReplaceAllString(text, "${1}:"+zeroWidthSpace)
 }
 
 // escapeAmpersand turns "&" into "&amp;" but leaves "&amp;" and the entities
