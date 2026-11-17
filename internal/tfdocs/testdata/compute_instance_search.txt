@@ -1,0 +1,61 @@
+Available Documentation (top matches) for resources in Terraform provider hashicorp/google version: 6.0.0
+
+Each result includes:
+- providerDocID: tfprovider-compatible identifier
+- Title: Service or resource name
+- Category: Type of document
+- Description: Brief summary of the document
+For best results, select libraries based on the service_slug match and category of information requested.
+
+---
+
+- providerDocID: 6299288
+- Title: compute_instance
+- Category: resources
+- Description: Manages a VM instance resource within GCE.
+---
+- providerDocID: 6299289
+- Title: compute_instance_from_machine_image
+- Category: resources
+- Description: Manages a VM instance resource within GCE.
+---
+- providerDocID: 6299290
+- Title: compute_instance_from_template
+- Category: resources
+- Description: Manages a VM instance resource within GCE.
+---
+- providerDocID: 6299291
+- Title: compute_instance_group
+- Category: resources
+- Description: Manages an Instance Group within GCE.
+---
+- providerDocID: 6299292
+- Title: compute_instance_group_manager
+- Category: resources
+- Description: Manages an Instance Group within GCE.
+---
+- providerDocID: 6299293
+- Title: compute_instance_group_membership
+- Category: resources
+- Description: Represents the Instance membership to the Instance Group.
+---
+- providerDocID: 6299294
+- Title: compute_instance_group_named_port
+- Category: resources
+- Description: Mange the named ports setting for a managed instance group without   managing the group as whole.
+---
+- providerDocID: 6299295
+- Title: compute_instance_iam
+- Category: resources
+- Description: Collection of resources to manage IAM policy for Compute Engine Instance
+---
+- providerDocID: 6299296
+- Title: compute_instance_settings
+- Category: resources
+- Description: Represents an Instance Settings resource.
+---
+- providerDocID: 6299297
+- Title: compute_instance_template
+- Category: resources
+- Description: Manages a VM instance template resource within GCE.
+---

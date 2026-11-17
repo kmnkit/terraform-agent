@@ -1,0 +1,107 @@
+// Package plan identifies the HCP Terraform run behind a commit, waits for it,
+// and reduces its plan to a value-free summary.
+package plan
+
+import (
+	"net/url"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/terraform-agent/internal/gitlab"
+)
+
+// Source pins which HCP Terraform runs are trusted. WantSHA is the MR head
+// commit every trusted run must have been created from.
+type Source struct {
+	Host       string
+	Org        string
+	Workspaces []string
+	WantSHA    string
+}
+
+// RunRef points at one trusted HCP run. StatusState is the GitLab commit
+// status state that carried the link.
+type RunRef struct {
+	Workspace   string
+	RunID       string
+	StatusState string
+}
+
+var runIDPattern = regexp.MustCompile(`^run-[A-Za-z0-9]+$`)
+
+// FindRun returns the first status whose target_url is a trusted run URL.
+// PROVISIONAL (Phase 0 B): the GitLab API is assumed to return statuses
+// newest first, so the first match in slice order is the latest run.
+//
+// The status name check is defense in depth only: GitLab statuses can be
+// forged, so the real gate is the run-details binding done in Wait (workspace,
+// org and commit SHA read from HCP itself).
+func FindRun(statuses []gitlab.CommitStatus, src Source) (RunRef, bool) {
+	for _, s := range statuses {
+		ws, id, ok := parseRunURL(s.TargetURL, src)
+		if !ok || !statusNameMatches(s.Name, src.Org, ws) {
+			continue
+		}
+		return RunRef{Workspace: ws, RunID: id, StatusState: s.Status}, true
+	}
+	return RunRef{}, false
+}
+
+// statusNameMatches accepts an empty name, or exactly "Terraform Cloud/<org>/<ws>".
+// PROVISIONAL (Phase 0 B): the real HCP status context name is unverified.
+func statusNameMatches(name, org, ws string) bool {
+	return name == "" || name == "Terraform Cloud/"+org+"/"+ws
+}
+
+// parseRunURL accepts only the two URL forms below, matched exactly, for one
+// of src.Workspaces.
+// PROVISIONAL (Phase 0 B): the real HCP status target_url shape is unverified.
+//
+//	https://<Host>/app/<Org>/<ws>/runs/<run-id>
+//	https://<Host>/app/<Org>/workspaces/<ws>/runs/<run-id>
+func parseRunURL(raw string, src Source) (workspace, runID string, ok bool) {
+	ws, id, ok := parseRunShape(raw, src)
+	if !ok || !slices.Contains(src.Workspaces, ws) {
+		return "", "", false
+	}
+	return ws, id, true
+}
+
+// parseRunShape is parseRunURL for any workspace name.
+func parseRunShape(raw string, src Source) (workspace, runID string, ok bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host != src.Host || u.User != nil {
+		return "", "", false
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(u.EscapedPath(), "%") {
+		return "", "", false
+	}
+	seg := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(seg) == 6 && seg[2] == "workspaces" {
+		seg = append(seg[:2:2], seg[3:]...)
+	}
+	if len(seg) != 5 || seg[0] != "app" || seg[1] != src.Org || seg[3] != "runs" || !runIDPattern.MatchString(seg[4]) {
+		return "", "", false
+	}
+	return seg[2], seg[4], true
+}
+
+// countUnrecognized counts statuses that link to src.Host but that FindRun
+// cannot use for a reason other than naming another workspace's run: a URL
+// or status name shaped differently from what FindRun expects. Such a status
+// suggests the PROVISIONAL shapes are wrong, so "no plan" would mislead.
+func countUnrecognized(statuses []gitlab.CommitStatus, src Source) int {
+	n := 0
+	for _, s := range statuses {
+		u, err := url.Parse(s.TargetURL)
+		if err != nil || u.Host != src.Host {
+			continue
+		}
+		ws, _, ok := parseRunShape(s.TargetURL, src)
+		if !ok || (slices.Contains(src.Workspaces, ws) && !statusNameMatches(s.Name, src.Org, ws)) {
+			n++
+		}
+	}
+	return n
+}

@@ -1,0 +1,13 @@
+.git
+.superpowers
+.mcp.json
+CLAUDE.md
+agent-prd.md
+**/*_test.go
+docs
+ci
+.env*
+*.pem
+*.key
+.claude
+.DS_Store
