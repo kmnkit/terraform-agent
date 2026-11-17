@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 )
 
 const (
 	envTaskCount = "CLOUD_RUN_TASK_COUNT"
 	envTaskIndex = "CLOUD_RUN_TASK_INDEX"
 )
+
+var decimalPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
 
 var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
@@ -32,25 +35,40 @@ func Parse(args []string, getenv func(string) string) (Input, error) {
 	}
 	fs := flag.NewFlagSet("job", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	mrIID := fs.Int("mr-iid", 0, "")
+	mrIIDRaw := fs.String("mr-iid", "", "")
 	sha := fs.String("sha", "", "")
-	pipelineID := fs.Int("pipeline-id", 0, "")
+	pipelineIDRaw := fs.String("pipeline-id", "", "")
 	if err := fs.Parse(args); err != nil {
 		return Input{}, fmt.Errorf("input: parse flags: %w", err)
 	}
 	if fs.NArg() > 0 {
 		return Input{}, errors.New("input: positional arguments are not allowed")
 	}
-	if *mrIID <= 0 {
-		return Input{}, errors.New("input: --mr-iid must be a positive integer")
+	mrIID, err := parseDecimal("mr-iid", *mrIIDRaw)
+	if err != nil {
+		return Input{}, err
 	}
 	if !shaPattern.MatchString(*sha) {
 		return Input{}, errors.New("input: --sha must be 40 lowercase hex characters")
 	}
-	if *pipelineID <= 0 {
-		return Input{}, errors.New("input: --pipeline-id must be a positive integer")
+	pipelineID, err := parseDecimal("pipeline-id", *pipelineIDRaw)
+	if err != nil {
+		return Input{}, err
 	}
-	return Input{MRIID: *mrIID, SHA: *sha, PipelineID: *pipelineID}, nil
+	return Input{MRIID: mrIID, SHA: *sha, PipelineID: pipelineID}, nil
+}
+
+// parseDecimal accepts only plain base-10 positive integers (no prefixes,
+// underscores, signs or leading zeros).
+func parseDecimal(name, raw string) (int, error) {
+	if !decimalPattern.MatchString(raw) {
+		return 0, fmt.Errorf("input: --%s must be a positive decimal integer, got %q", name, raw)
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("input: --%s out of range: %w", name, err)
+	}
+	return n, nil
 }
 
 // checkTask fails closed: Cloud Run always sets both variables.

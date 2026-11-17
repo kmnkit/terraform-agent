@@ -71,6 +71,14 @@ func TestParse_RejectsNonNumeric(t *testing.T) {
 		{"--mr-iid", "-3", "--sha", goodSHA, "--pipeline-id", "7"},
 		{"--mr-iid", "42", "--sha", goodSHA, "--pipeline-id", "x"},
 		{"--mr-iid", "42", "--sha", goodSHA, "--pipeline-id", "0"},
+		{"--mr-iid", "010", "--sha", goodSHA, "--pipeline-id", "7"},
+		{"--mr-iid", "0x10", "--sha", goodSHA, "--pipeline-id", "7"},
+		{"--mr-iid", "1_0", "--sha", goodSHA, "--pipeline-id", "7"},
+		{"--mr-iid", "42", "--sha", goodSHA, "--pipeline-id", "010"},
+		{"--mr-iid", "42", "--sha", goodSHA, "--pipeline-id", "0x10"},
+		{"--mr-iid", "42", "--sha", goodSHA, "--pipeline-id", "1_0"},
+		{"--mr-iid", "99999999999999999999", "--sha", goodSHA, "--pipeline-id", "7"},
+		{"--mr-iid", "+5", "--sha", goodSHA, "--pipeline-id", "7"},
 	}
 	for _, args := range cases {
 		assertErr(t, args, okEnv, "")
