@@ -52,6 +52,8 @@ type reviewItem struct {
 // detected only because GitLab collapsed .tf diffs, a truncation-only note is
 // posted without an LLM call. Static checks are read before the scan, so the
 // analysis-failed note posted on any later error (spec §5) still shows them.
+// A diff fetch error also posts it: whether .tf changed is unknown then, so
+// the run fails loud.
 func RunCode(ctx context.Context, d Deps, in input.Input) error {
 	ds, err := fetchDiffs(ctx, d, in.MRIID)
 	if err != nil {
@@ -114,18 +116,35 @@ func handleNoChanges(ctx context.Context, d Deps, in input.Input, ds diffSet, ch
 
 // prepare reads the provider declarations and docs and builds the view and
 // LLM input. Resources without documentation evidence are left out of the
-// LLM input and listed as skipped (spec §3).
+// LLM input and listed as skipped (spec §3). Removed resources get no doc
+// lookup and no LLM review; they are listed separately.
 func prepare(ctx context.Context, d Deps, in input.Input, head hclscan.FileReader, ds diffSet,
 	changes hclscan.Changes, checks []model.CheckResult) (render.CodeReviewView, llm.ReviewInput, map[string]tfdocs.Excerpt, error) {
 	decls, err := providerDecls(ctx, head, ds.raw)
 	if err != nil {
 		return render.CodeReviewView{}, llm.ReviewInput{}, nil, err
 	}
-	docs, basis := lookupDocs(ctx, d, head, reviewItems(changes.Resources), decls)
-	reviewed, skipped := splitByDocs(reviewItems(changes.Resources), docs)
+	live, removed := splitRemoved(reviewItems(changes.Resources))
+	docs, basis := lookupDocs(ctx, d, head, live, decls)
+	reviewed, skipped := splitByDocs(live, docs)
 	view := render.CodeReviewView{SHA: in.SHA, Checks: checks, Truncated: ds.truncated,
-		VersionBasis: string(basis), Skipped: skipped}
+		VersionBasis: string(basis), Skipped: skipped, Removed: removed}
 	return view, buildInput(reviewed, changes.Modules, ds, docs, checks), docs, nil
+}
+
+// splitRemoved returns the items that still exist and the addresses of the
+// removed ones, both in item order.
+func splitRemoved(items []reviewItem) ([]reviewItem, []string) {
+	var live []reviewItem
+	var removed []string
+	for _, it := range items {
+		if it.rc.Removed {
+			removed = append(removed, it.addr)
+		} else {
+			live = append(live, it)
+		}
+	}
+	return live, removed
 }
 
 // splitByDocs returns the items that have a doc excerpt and the addresses of
@@ -266,7 +285,7 @@ func readExisting(ctx context.Context, head hclscan.FileReader, paths []string) 
 	return files, nil
 }
 
-// lookupDocs fetches docs for every non-removed resource, keyed by review
+// lookupDocs fetches docs for every given resource, keyed by review
 // address, using the provider declarations of the resource's own directory.
 // It returns the weakest basis among the resources that got docs (none when
 // none did): only those are reviewed, the rest are listed as skipped.
@@ -275,9 +294,6 @@ func lookupDocs(ctx context.Context, d Deps, head hclscan.FileReader, items []re
 	docs := map[string]tfdocs.Excerpt{}
 	var worst tfdocs.Basis
 	for _, it := range items {
-		if it.rc.Removed {
-			continue
-		}
 		basis, ex := resourceDoc(ctx, d, head, it, decls[path.Dir(it.rc.File)])
 		if basis == tfdocs.BasisNone {
 			continue
@@ -414,7 +430,7 @@ func buildInput(items []reviewItem, modules []hclscan.ModuleCall, ds diffSet, do
 	for _, it := range items {
 		ex := docs[it.addr]
 		res = append(res, llm.ReviewResource{
-			Address: it.addr, File: it.rc.File, ChangedAttrs: it.rc.ChangedAttrs, Removed: it.rc.Removed,
+			Address: it.addr, File: it.rc.File, ChangedAttrs: it.rc.ChangedAttrs,
 			DiffExcerpt: ds.excerpts[it.rc.File], DocExcerpt: ex.Text, DocTruncated: ex.Truncated,
 		})
 	}

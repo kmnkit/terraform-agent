@@ -46,14 +46,36 @@ func failPlan(ctx context.Context, d Deps, in input.Input, ws string, cause erro
 // FailStartup posts the analysis-failed notes for a run that passed Preflight
 // but could not start its flows (MCP tool check, MCP server or LLM client):
 // the code note, with static checks when they can be read, and the plan note
-// of every configured workspace. It needs only d.GitLab, d.Notes, d.Config
-// and d.Log, and returns cause joined with any publish error.
+// of every configured workspace. Like RunCode, it posts no code note for an
+// MR without .tf changes; if the diffs cannot be read, it posts the code note
+// anyway. It needs only d.GitLab, d.Notes, d.Config and d.Log, and returns
+// cause joined with any publish error.
 func FailStartup(ctx context.Context, d Deps, in input.Input, cause error) error {
-	errs := []error{cause, failCode(ctx, d, in, startupChecks(ctx, d, in), nil)}
+	errs := []error{cause}
+	if startupHasTFChanges(ctx, d, in) {
+		errs = append(errs, failCode(ctx, d, in, startupChecks(ctx, d, in), nil))
+	}
 	for _, ws := range sortedWorkspaces(d) {
 		errs = append(errs, failPlan(ctx, d, in, ws, nil))
 	}
 	return errors.Join(errs...)
+}
+
+// startupHasTFChanges reports whether the MR changes any .tf file. When the
+// diffs cannot be read it reports true, so the failure note is still posted.
+func startupHasTFChanges(ctx context.Context, d Deps, in input.Input) bool {
+	nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), noticeTimeout)
+	defer cancel()
+	ds, err := fetchDiffs(nctx, d, in.MRIID)
+	if err != nil {
+		d.Log.Warn("review: diffs unavailable for the failure note; posting it anyway", "err", err)
+		return true
+	}
+	if len(ds.excerpts) == 0 && ds.collapsed == 0 {
+		d.Log.Info("review: no terraform file changes; no code failure note")
+		return false
+	}
+	return true
 }
 
 // startupChecks reads the static checks for a startup failure note; on error

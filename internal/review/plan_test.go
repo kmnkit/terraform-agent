@@ -239,13 +239,16 @@ func TestRunPlan_NoPlanPostsNotice(t *testing.T) {
 	}
 }
 
+// aiLabelText is render's reference-only label for AI output (spec §6).
+const aiLabelText = "_AI가 작성한 소견으로 참고용입니다._"
+
 func TestRunPlan_FailedPlanAnalyzesErrorBlocks(t *testing.T) {
 	h := newPlanHarness(wsProd)
 	h.addFailed(wsProd, "run-ERR1", "plan-9", failedLogFixture)
 	if err := h.runPlan(t); err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	mustContain(t, h.store.body(t), "### plan 실패", failText, "실행: "+runURLOf(wsProd, "run-ERR1"))
+	mustContain(t, h.store.body(t), "### plan 실패", failText, "실행: "+runURLOf(wsProd, "run-ERR1"), aiLabelText)
 	if len(h.nar.blocksIn) != 1 || !reflect.DeepEqual(h.nar.blocksIn[0], []string{errorBlock}) {
 		t.Errorf("failure input = %q", h.nar.blocksIn)
 	}
@@ -265,6 +268,9 @@ func TestRunPlan_FailedPlanWithoutErrorBlocksSkipsLLM(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 	mustContain(t, h.store.body(t), "### plan 실패", noErrorBlocksNotice)
+	if strings.Contains(h.store.body(t), aiLabelText) {
+		t.Errorf("fixed notice labeled as AI output")
+	}
 	if h.llmCalls() != 0 {
 		t.Errorf("LLM called %d times, want 0", h.llmCalls())
 	}
@@ -404,7 +410,7 @@ func TestRunPlan_FailureLLMErrorPostsFailedNotice(t *testing.T) {
 	}
 	body := h.store.body(t)
 	mustContain(t, body, "### plan 실패", failureAnalysisFailedNotice)
-	for _, s := range []string{"추가 0", "분석 실패: plan 요약만"} {
+	for _, s := range []string{"추가 0", "분석 실패: plan 요약만", aiLabelText} {
 		if strings.Contains(body, s) {
 			t.Errorf("failed plan body contains %q:\n%s", s, body)
 		}

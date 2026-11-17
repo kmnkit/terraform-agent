@@ -21,4 +21,6 @@ _AI가 작성한 소견으로 참고용입니다._
 
 문서 근거 없음, 리뷰 생략: `google_compute_network.vpc`, `b/google_dns_record_set.www`
 
+삭제된 리소스, 문서 조회 대상 아님: `google_pubsub_topic.old`
+
 _근거: lock 파일의 provider 버전에 맞는 Terraform 공식 문서._

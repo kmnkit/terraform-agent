@@ -188,6 +188,7 @@ func analyzeFailure(ctx context.Context, d Deps, in input.Input, planID string, 
 		return publishFailureUnexplained(ctx, d, in, view, fmt.Errorf("review: plan failure of workspace %s: %w", view.Workspace, err))
 	}
 	view.Failure = render.Sanitize(text, d.Config.Limits.LLMOutputBytes)
+	view.FailureByAI = true
 	return publishPlan(ctx, d, in, view)
 }
 

@@ -235,7 +235,8 @@ func TestRun_VerifyToolsFailureFails(t *testing.T) {
 	if err := h.runAll(context.Background()); !errors.Is(err, verifyErr) {
 		t.Fatalf("err = %v, want wrapping %v", err, verifyErr)
 	}
-	if len(h.dm.diag) != 0 || h.rgl.diffCalls != 0 || len(h.pm.calls) != 0 {
+	// The only read after the failure is FailStartup's .tf diff check.
+	if len(h.dm.diag) != 0 || h.rgl.diffCalls != 1 || len(h.pm.calls) != 0 {
 		t.Errorf("work after VerifyTools failure: diag=%v diffs=%d mcp=%d", h.dm.diag, h.rgl.diffCalls, len(h.pm.calls))
 	}
 	h.assertStartupFailureNotes(t)
@@ -266,6 +267,36 @@ func TestFailStartup_NeedsOnlyGitLabNotesConfigAndLog(t *testing.T) {
 	cause := errors.New("tfmcp: start MCP server failed")
 	in := input.Input{MRIID: 7, SHA: headSHA, PipelineID: runPipelineID}
 	if err := FailStartup(context.Background(), d, in, cause); !errors.Is(err, cause) {
+		t.Fatalf("err = %v, want wrapping %v", err, cause)
+	}
+	h.assertStartupFailureNotes(t)
+}
+
+// An MR without .tf changes gets no code failure note; plan notes still go.
+func TestFailStartup_NoTFChangesPostsOnlyPlanNotes(t *testing.T) {
+	h := newRunHarness()
+	h.gl.diffs = []gitlab.FileDiff{{OldPath: "README.md", NewPath: "README.md", Diff: "@@ -1 +1 @@\n-x\n+y\n"}}
+	in := input.Input{MRIID: 7, SHA: headSHA, PipelineID: runPipelineID}
+	cause := errors.New("tfmcp: start MCP server failed")
+	if err := FailStartup(context.Background(), h.runDeps(), in, cause); !errors.Is(err, cause) {
+		t.Fatalf("err = %v, want wrapping %v", err, cause)
+	}
+	if len(h.store.notes) != 1 {
+		t.Fatalf("notes = %d, want the plan note only", len(h.store.notes))
+	}
+	assertPlanError(t, h.planHarness, "ws-a")
+	if render.HasMarker(h.store.notes[0].Body, "code", "-") {
+		t.Errorf("code failure note posted for an MR without .tf changes")
+	}
+}
+
+// If the .tf check itself fails, the code failure note is posted anyway.
+func TestFailStartup_DiffCheckErrorStillPostsCodeNote(t *testing.T) {
+	h := newRunHarness()
+	h.rgl.diffsErr = errors.New("diffs boom")
+	in := input.Input{MRIID: 7, SHA: headSHA, PipelineID: runPipelineID}
+	cause := errors.New("tfmcp: start MCP server failed")
+	if err := FailStartup(context.Background(), h.runDeps(), in, cause); !errors.Is(err, cause) {
 		t.Fatalf("err = %v, want wrapping %v", err, cause)
 	}
 	h.assertStartupFailureNotes(t)
@@ -334,7 +365,9 @@ func TestRun_DeadlineCancelsRun(t *testing.T) {
 	if err := h.runAll(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want DeadlineExceeded", err)
 	}
-	if h.rgl.diffCalls != 0 || len(h.pm.calls) != 0 {
+	// The only read after the deadline is FailStartup's .tf diff check, on a
+	// detached context.
+	if h.rgl.diffCalls != 1 || len(h.pm.calls) != 0 {
 		t.Errorf("work after deadline: diffs=%d mcp=%d", h.rgl.diffCalls, len(h.pm.calls))
 	}
 	// The failure notes are still posted, on a detached context.

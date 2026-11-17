@@ -61,7 +61,7 @@ func TestInputTypeShapesArePinned(t *testing.T) {
 		want []string
 	}{
 		{ReviewInput{}, []string{"Resources", "Modules", "Checks", "DiffTruncated"}},
-		{ReviewResource{}, []string{"Address", "File", "ChangedAttrs", "Removed", "DiffExcerpt", "DocExcerpt", "DocTruncated"}},
+		{ReviewResource{}, []string{"Address", "File", "ChangedAttrs", "DiffExcerpt", "DocExcerpt", "DocTruncated"}},
 		{ModuleContext{}, []string{"Name", "Source", "Version"}},
 		{model.PlanSummary{}, []string{"Add", "Change", "Destroy", "Replace", "Targets", "Truncated"}},
 		{model.Target{}, []string{"Address", "Action", "Attrs"}},

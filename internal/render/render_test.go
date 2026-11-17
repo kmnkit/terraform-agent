@@ -68,6 +68,7 @@ func TestGoldenComments(t *testing.T) {
 	failed.Summary = model.PlanSummary{}
 	failed.Risks = nil
 	failed.Failure = "provider 인증 오류로 plan이 실패했습니다."
+	failed.FailureByAI = true
 
 	noPlan := PlanView{Workspace: "prod", SHA: testSHA, Status: PlanNoPlan}
 
@@ -90,6 +91,7 @@ func TestGoldenComments(t *testing.T) {
 
 	codeSkipped := codeView()
 	codeSkipped.Skipped = []string{"google_compute_network.vpc", "b/google_dns_record_set.www"}
+	codeSkipped.Removed = []string{"google_pubsub_topic.old"}
 
 	codeNotReviewed := CodeReviewView{SHA: testSHA, VersionBasis: "none", NotReviewed: true,
 		Skipped: []string{"google_compute_network.vpc"}}
@@ -155,11 +157,19 @@ func TestAIOutputIsLabeledReferenceOnly(t *testing.T) {
 	if body := Plan(planView(PlanOK)); strings.Count(body, wantAILabel) != 1 {
 		t.Errorf("plan with risks lacks one label:\n%s", body)
 	}
+	failed := planView(PlanFailed)
+	failed.Failure = "AI analysis"
+	failed.FailureByAI = true
+	if body := Plan(failed); strings.Count(body, wantAILabel) != 1 {
+		t.Errorf("plan failure analysis lacks one label:\n%s", body)
+	}
 	noFindings := codeView()
 	noFindings.Findings = nil
 	noRisks := planView(PlanOK)
 	noRisks.Risks = nil
-	for _, body := range []string{CodeReview(noFindings), Plan(noRisks)} {
+	fixedFailure := planView(PlanFailed)
+	fixedFailure.Failure = "fixed notice"
+	for _, body := range []string{CodeReview(noFindings), Plan(noRisks), Plan(fixedFailure)} {
 		if strings.Contains(body, wantAILabel) {
 			t.Errorf("label without AI output:\n%s", body)
 		}

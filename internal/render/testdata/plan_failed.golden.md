@@ -7,4 +7,6 @@ workspace: `prod`
 
 ### plan 실패
 
+_AI가 작성한 소견으로 참고용입니다._
+
 provider 인증 오류로 plan이 실패했습니다.

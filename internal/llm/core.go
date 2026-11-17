@@ -26,7 +26,6 @@ type ReviewResource struct {
 	Address      string
 	File         string
 	ChangedAttrs []string
-	Removed      bool
 	DiffExcerpt  string
 	DocExcerpt   string
 	DocTruncated bool
@@ -100,16 +99,12 @@ func buildReviewPrompt(in ReviewInput, nonce string) string {
 
 func resourceSection(nonce string, r ReviewResource) string {
 	var b strings.Builder
-	state := "changed"
-	if r.Removed {
-		state = "removed"
-	}
 	doc := "provided"
 	if r.DocExcerpt == "" {
 		doc = "문서 근거 없음"
 	}
-	b.WriteString(block(nonce, "resource", fmt.Sprintf("address=%s file=%s state=%s attrs=%s doc=%s",
-		r.Address, r.File, state, strings.Join(r.ChangedAttrs, ","), doc)))
+	b.WriteString(block(nonce, "resource", fmt.Sprintf("address=%s file=%s attrs=%s doc=%s",
+		r.Address, r.File, strings.Join(r.ChangedAttrs, ","), doc)))
 	b.WriteString(block(nonce, "diff "+r.Address, r.DiffExcerpt))
 	if r.DocExcerpt != "" {
 		label := "doc " + r.Address

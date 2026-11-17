@@ -47,6 +47,9 @@ type CodeReviewView struct {
 	// Skipped are the addresses of changed resources without documentation
 	// evidence; they were not reviewed (spec §3).
 	Skipped []string
+	// Removed are the addresses of deleted resources; they get no doc lookup
+	// and no AI review.
+	Removed []string
 	// NotReviewed: no resource had documentation evidence, so no AI review ran.
 	NotReviewed bool
 }
@@ -61,6 +64,9 @@ type PlanView struct {
 	Summary   model.PlanSummary
 	Risks     []string
 	Failure   string
+	// FailureByAI: Failure was written by the LLM, so it carries the
+	// reference-only label (spec §6); fixed notices do not.
+	FailureByAI bool
 	// Queued is used by PlanTimeout only: the last observed run phase was
 	// queued (true) or running (false).
 	Queued bool
@@ -126,6 +132,9 @@ var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker
 {{- if .Skipped}}
 문서 근거 없음, 리뷰 생략: {{attrs .Skipped}}
 {{end}}
+{{- if .Removed}}
+삭제된 리소스, 문서 조회 대상 아님: {{attrs .Removed}}
+{{end}}
 {{basis .VersionBasis}}
 `))
 
@@ -151,7 +160,9 @@ workspace: {{code .Workspace}}
 {{end}}
 {{- if is .Status "failed"}}
 ### plan 실패
-
+{{if .FailureByAI}}
+{{ailabel}}
+{{end}}
 {{line .Failure}}
 {{else}}
 ### 변경 요약

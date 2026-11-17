@@ -738,3 +738,25 @@ func TestRunCode_LogsCarryNoPayloads(t *testing.T) {
 		}
 	}
 }
+
+// Removed resources get no doc lookup and no LLM review; they are listed as
+// deleted, not as lacking doc evidence.
+func TestRunCode_RemovedResourceListedSeparately(t *testing.T) {
+	h := newHarness()
+	h.gl.diffs = append(h.gl.diffs, gitlab.FileDiff{OldPath: "env/gone.tf", NewPath: "env/gone.tf", DeletedFile: true,
+		Diff: "@@ -1,3 +0,0 @@\n-resource \"google_pubsub_topic\" \"t\" {\n-  name = \"t\"\n-}\n"})
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	if res := h.nar.in.Resources; len(res) != 1 || res[0].Address != "google_storage_bucket.logs" {
+		t.Fatalf("LLM resources = %+v", res)
+	}
+	body := h.store.body(t)
+	mustContain(t, body, "삭제된 리소스, 문서 조회 대상 아님: `google_pubsub_topic.t`")
+	if strings.Contains(body, "리뷰 생략") {
+		t.Errorf("removed resource listed as doc-less:\n%s", body)
+	}
+	if h.docs.calls != 1 {
+		t.Errorf("doc lookups = %d, want 1 (removed resource not looked up)", h.docs.calls)
+	}
+}
