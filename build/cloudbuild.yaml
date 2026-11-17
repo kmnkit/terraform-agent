@@ -7,3 +7,7 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args: ['build', '-f', 'build/Dockerfile', '-t', '${_IMAGE}:${_TAG}', '.']
 images: ['${_IMAGE}:${_TAG}']
+# Required when running with a user-specified build SA (--service-account):
+# logs go to Cloud Logging only, so no default logs bucket access is needed.
+options:
+  logging: CLOUD_LOGGING_ONLY

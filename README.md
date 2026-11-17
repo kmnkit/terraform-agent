@@ -92,6 +92,21 @@ gcloud builds submit . --config build/cloudbuild.yaml --region REGION \
 - 実行するユーザーに `roles/cloudbuild.builds.editor` を付与します。
 - Cloud Build が使うサービスアカウント (project の設定により Compute Engine のデフォルト SA または Cloud Build SA) に、対象の Artifact Registry リポジトリの `roles/artifactregistry.writer` を付与します。
 
+専用のビルド SA を使う場合は `--service-account` を指定します。指定しないとデフォルト SA で実行されます。
+
+```sh
+gcloud builds submit . --config build/cloudbuild.yaml --region REGION \
+  --service-account "projects/PROJECT/serviceAccounts/BUILD_SA_EMAIL" \
+  --substitutions "_IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/tf-review,_TAG=$SHA"
+```
+
+専用ビルド SA に必要な権限:
+
+- 対象の Artifact Registry リポジトリの `roles/artifactregistry.writer`
+- project の `roles/logging.logWriter` (`cloudbuild.yaml` はログを Cloud Logging にのみ出力します)
+- ソースのアップロード先バケット `gs://PROJECT_cloudbuild` の `roles/storage.objectViewer`
+- 実行するユーザーには、この SA に対する `roles/iam.serviceAccountUser` が必要です。
+
 注意:
 
 - コミットしていない変更 (実際の値を入れた `config.json` など) もアップロードされます。ビルド前に `git status` で内容を確認してください。

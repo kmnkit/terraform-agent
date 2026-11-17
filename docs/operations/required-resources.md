@@ -1,5 +1,7 @@
 # 필요 리소스
 
+> 순서대로 복사해 실행하는 절차는 [pilot-setup.md](pilot-setup.md)에 있다.
+
 에이전트를 운영하려면 사용자가 Google Cloud project에 아래 리소스를 직접 만들어야 한다. 이 저장소는 이 리소스를 만드는 Terraform을 제공하지 않는다(설계 문서 범위 밖). 아래 `gcloud` 예시는 필요한 설정을 보여주는 용도이며 실제 값(`PROJECT`, `NUM`, `POOL` 등)은 환경에 맞게 바꾼다.
 
 에이전트 한 인스턴스는 Google Cloud project 하나에 종속된다. 아래 리소스는 모두 그 project에 만든다. 대상 Terraform 저장소의 GitLab CI는 `ci/tf-review.gitlab-ci.yml` 템플릿을 `include`해서 이 리소스를 호출한다.
