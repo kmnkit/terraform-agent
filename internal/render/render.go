@@ -135,7 +135,7 @@ var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker
 {{- if .Removed}}
 削除されたリソース (ドキュメント照会の対象外): {{attrs .Removed}}
 {{end}}
-{{basis .VersionBasis}}
+{{if not .AnalysisFailed}}{{basis .VersionBasis}}{{end}}
 `))
 
 var planTmpl = template.Must(template.New(planKind).Funcs(funcs).Parse(`{{marker "plan" .Workspace}}
@@ -153,7 +153,7 @@ workspace: {{code .Workspace}}
 {{- else if is .Status "noplan"}}
 > このコミットに対応する plan が見つかりませんでした。
 {{- else if is .Status "timeout"}}
-> 待機時間内に plan が完了しませんでした。最後に確認した状態は{{if .Queued}}待機中 (queued){{else}}実行中 (running){{end}}です。
+> 待機時間内に plan が完了しませんでした。最後に確認した状態: {{if .Queued}}待機中 (queued){{else}}実行中 (running){{end}}
 {{- else}}
 {{- if is .Status "analysisFailed"}}
 > 分析失敗: plan の概要のみ表示します。リスク分析は提供されません。
