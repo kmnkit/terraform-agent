@@ -1,0 +1,6 @@
+{"version": 1, "results": [
+  {"tool": "trivy", "passed": false, "summary": "1 HIGH finding"},
+  {"tool": "fmt", "passed": true, "summary": "formatted"},
+  {"tool": "tflint", "passed": true, "summary": "no issues"},
+  {"tool": "validate", "passed": true, "summary": "valid"}
+]}
