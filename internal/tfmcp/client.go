@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,9 +20,9 @@ import (
 )
 
 const (
-	maxAttempts    = 4
-	baseBackoff    = time.Second
-	rateLimitPhase = "rate limit exceeded"
+	maxAttempts     = 4
+	baseBackoff     = time.Second
+	rateLimitPhrase = "rate limit exceeded"
 )
 
 // Caller invokes an allowlisted MCP tool by its logical name.
@@ -34,6 +36,8 @@ type Client struct {
 	allowlist map[string]string
 	home      string
 	sleep     func(ctx context.Context, d time.Duration) error
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Start launches cfg.McpBinaryPath with only the allowlisted tools enabled and
@@ -59,7 +63,7 @@ func Start(ctx context.Context, cfg config.Config, tfeTokenFile string) (*Client
 	session, err := mcp.NewClient(impl, nil).Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		_ = os.RemoveAll(home)
-		return nil, errors.New("tfmcp: start MCP server failed")
+		return nil, classify(ctx, "start MCP server", err)
 	}
 	return &Client{
 		session:   session,
@@ -67,6 +71,21 @@ func Start(ctx context.Context, cfg config.Config, tfeTokenFile string) (*Client
 		home:      home,
 		sleep:     sleepCtx,
 	}, nil
+}
+
+// classify keeps the cause of causes that cannot carry payload text (context
+// errors, and exec/path errors that hold only the binary path) so callers can
+// use errors.Is/As; any other protocol error is reduced to fixed text.
+func classify(ctx context.Context, op string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("tfmcp: %s: %w", op, ctxErr)
+	}
+	var execErr *exec.Error
+	var pathErr *fs.PathError
+	if errors.As(err, &execErr) || errors.As(err, &pathErr) {
+		return fmt.Errorf("tfmcp: %s: %w", op, err)
+	}
+	return fmt.Errorf("tfmcp: %s failed", op)
 }
 
 func toolArg(allow map[string]string) string {
@@ -98,7 +117,7 @@ func (c *Client) VerifyTools(ctx context.Context) error {
 	for {
 		res, err := c.session.ListTools(ctx, params)
 		if err != nil {
-			return errors.New("tfmcp: tools/list failed")
+			return classify(ctx, "tools/list", err)
 		}
 		for _, t := range res.Tools {
 			listed[t.Name] = true
@@ -157,7 +176,7 @@ func (c *Client) callOnce(ctx context.Context, actual string, args map[string]an
 	if !res.IsError {
 		return text, false, nil
 	}
-	if strings.Contains(strings.ToLower(text), rateLimitPhase) {
+	if strings.Contains(strings.ToLower(text), rateLimitPhrase) {
 		return "", true, nil
 	}
 	return "", false, fmt.Errorf("tfmcp: tool %q: server reported a tool error", actual)
@@ -173,11 +192,16 @@ func joinText(content []mcp.Content) string {
 	return b.String()
 }
 
-// Close ends the session, waits for the child to exit and removes the temp HOME.
+// Close ends the session, waits for the child to exit and removes the temp
+// HOME. It is mandatory: without it the child process and temp dir leak. It is
+// idempotent and returns the first call's result every time.
 func (c *Client) Close() error {
-	err := c.session.Close()
-	if rmErr := os.RemoveAll(c.home); rmErr != nil && err == nil {
-		err = fmt.Errorf("tfmcp: remove temp HOME: %w", rmErr)
-	}
-	return err
+	c.closeOnce.Do(func() {
+		err := c.session.Close()
+		if rmErr := os.RemoveAll(c.home); rmErr != nil && err == nil {
+			err = fmt.Errorf("tfmcp: remove temp HOME: %w", rmErr)
+		}
+		c.closeErr = err
+	})
+	return c.closeErr
 }

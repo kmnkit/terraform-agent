@@ -1,9 +1,11 @@
 package tfmcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/terraform-agent/internal/config"
 )
 
@@ -119,11 +122,78 @@ func TestStart_EmptyOrMissingTokenIsError(t *testing.T) {
 	}
 }
 
-func TestStart_BadBinaryFails(t *testing.T) {
+func homeDirCount(t *testing.T) int {
+	t.Helper()
+	m, err := filepath.Glob(filepath.Join(os.TempDir(), "tfmcp-home*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(m)
+}
+
+func TestStart_MissingBinaryPropagatesCauseAndRemovesHome(t *testing.T) {
 	cfg := testConfig(nil)
 	cfg.McpBinaryPath = filepath.Join(t.TempDir(), "nope")
-	if _, err := Start(context.Background(), cfg, writeToken(t, "t")); err == nil {
-		t.Fatal("want start error")
+	before := homeDirCount(t)
+	_, err := Start(context.Background(), cfg, writeToken(t, "t"))
+	var execErr *exec.Error
+	var pathErr *fs.PathError
+	if !errors.As(err, &execErr) && !errors.As(err, &pathErr) {
+		t.Fatalf("want *exec.Error or *fs.PathError, got %v", err)
+	}
+	if after := homeDirCount(t); after != before {
+		t.Errorf("tfmcp-home dirs before=%d after=%d", before, after)
+	}
+}
+
+func TestStart_DeadlineExceededPropagatesAndRemovesHome(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	before := homeDirCount(t)
+	_, err := Start(ctx, testConfig(nil), writeToken(t, "t"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+	if after := homeDirCount(t); after != before {
+		t.Errorf("tfmcp-home dirs before=%d after=%d", before, after)
+	}
+}
+
+func TestVerifyTools_ContextErrorPropagates(t *testing.T) {
+	c := startClient(t, testConfig(nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.VerifyTools(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want Canceled", err)
+	}
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	c := startClient(t, testConfig(nil))
+	first := c.Close()
+	if second := c.Close(); second != first {
+		t.Errorf("second Close = %v, first = %v", second, first)
+	}
+}
+
+// Positive control: proves the fake server really writes noise to stderr, so
+// the "not forwarded" assertion above can fail.
+func TestFakeServer_NoisyWritesToStderr(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := exec.Command(fakeBinary, "--tools=noisy")
+	cmd.Stderr = &buf
+	ctx := context.Background()
+	impl := &mcp.Implementation{Name: "ctl", Version: "0"}
+	s, err := mcp.NewClient(impl, nil).Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CallTool(ctx, &mcp.CallToolParams{Name: "noisy"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	if !strings.Contains(buf.String(), "NOISE-FROM-CHILD-STDERR") {
+		t.Errorf("noise missing from captured stderr: %q", buf.String())
 	}
 }
 
@@ -199,7 +269,7 @@ func TestCall_RetriesOnRateLimitText(t *testing.T) {
 		if err != nil || out != "finally" {
 			t.Fatalf("out=%q err=%v", out, err)
 		}
-		if len(sleeps) != 3 || sleeps[1] != 2*sleeps[0] || sleeps[2] != 2*sleeps[1] {
+		if len(sleeps) != 3 || sleeps[0] != time.Second || sleeps[1] != 2*sleeps[0] || sleeps[2] != 2*sleeps[1] {
 			t.Errorf("backoff not exponential: %v", sleeps)
 		}
 	}
