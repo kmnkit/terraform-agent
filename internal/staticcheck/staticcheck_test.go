@@ -14,6 +14,12 @@ func TestArtifactName(t *testing.T) {
 	}
 }
 
+func TestJobName(t *testing.T) {
+	if JobName != "tf-review-staticcheck" {
+		t.Fatalf("JobName = %q", JobName)
+	}
+}
+
 func TestParse_AllTools(t *testing.T) {
 	got, err := Parse(readTestdata(t, "all_tools.json"))
 	if err != nil {

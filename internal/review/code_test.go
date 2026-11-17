@@ -1,0 +1,499 @@
+package review
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"github.com/terraform-agent/internal/config"
+	"github.com/terraform-agent/internal/gitlab"
+	"github.com/terraform-agent/internal/input"
+	"github.com/terraform-agent/internal/llm"
+	"github.com/terraform-agent/internal/model"
+	"github.com/terraform-agent/internal/staticcheck"
+	"github.com/terraform-agent/internal/tfdocs"
+	"github.com/terraform-agent/internal/tfmcp"
+)
+
+const (
+	headSHA     = "0123456789abcdef0123456789abcdef01234567"
+	botID       = int64(42)
+	diffSecret  = "DIFF_SENTINEL_9f3a"
+	docSecret   = "DOC_SENTINEL_7c1e"
+	tokenSecret = "glpat-TOKEN_SENTINEL_55"
+	fakeJobID   = int64(700)
+)
+
+// --- fakes ---
+
+type fakeGitLab struct {
+	diffs     []gitlab.FileDiff
+	files     map[string]string
+	jobs      []gitlab.Job
+	artifacts map[int64][]byte
+	jobsErr   error
+}
+
+func (f *fakeGitLab) MergeRequestDiffs(context.Context, int) ([]gitlab.FileDiff, error) {
+	return f.diffs, nil
+}
+
+func (f *fakeGitLab) FileAtRef(_ context.Context, path, ref string) ([]byte, error) {
+	if ref != headSHA {
+		return nil, fmt.Errorf("unexpected ref %q", ref)
+	}
+	s, ok := f.files[path]
+	if !ok {
+		return nil, fmt.Errorf("file %s: %w", path, gitlab.ErrNotFound)
+	}
+	return []byte(s), nil
+}
+
+func (f *fakeGitLab) PipelineJobs(context.Context, int64) ([]gitlab.Job, error) {
+	return f.jobs, f.jobsErr
+}
+
+func (f *fakeGitLab) JobArtifact(_ context.Context, jobID int64, artifactPath string) ([]byte, error) {
+	b, ok := f.artifacts[jobID]
+	if !ok || artifactPath != staticcheck.ArtifactName {
+		return nil, fmt.Errorf("artifact: %w", gitlab.ErrNotFound)
+	}
+	return b, nil
+}
+
+func (f *fakeGitLab) MergeRequest(context.Context, int) (gitlab.MergeRequest, error) {
+	return gitlab.MergeRequest{SHA: headSHA}, nil
+}
+
+func (f *fakeGitLab) MergeRequestPipelines(context.Context, int) ([]gitlab.Pipeline, error) {
+	return nil, nil
+}
+
+func (f *fakeGitLab) CommitStatuses(context.Context, string) ([]gitlab.CommitStatus, error) {
+	return nil, nil
+}
+
+// fakeStore is a stateful NoteStore so re-runs exercise the real upsert path.
+type fakeStore struct {
+	sha    string
+	notes  []gitlab.Note
+	nextID int64
+	calls  int
+}
+
+func newFakeStore() *fakeStore { return &fakeStore{sha: headSHA, nextID: 100} }
+
+func (s *fakeStore) CurrentUser(context.Context) (gitlab.User, error) {
+	s.calls++
+	return gitlab.User{ID: botID}, nil
+}
+
+func (s *fakeStore) MergeRequest(context.Context, int) (gitlab.MergeRequest, error) {
+	s.calls++
+	return gitlab.MergeRequest{SHA: s.sha}, nil
+}
+
+func (s *fakeStore) ListNotes(context.Context, int) ([]gitlab.Note, error) {
+	s.calls++
+	return append([]gitlab.Note(nil), s.notes...), nil
+}
+
+func (s *fakeStore) CreateNote(_ context.Context, _ int, body string) (gitlab.Note, error) {
+	s.calls++
+	s.nextID++
+	n := gitlab.Note{ID: s.nextID, Body: body, AuthorID: botID}
+	s.notes = append(s.notes, n)
+	return n, nil
+}
+
+func (s *fakeStore) UpdateNote(_ context.Context, _ int, id int64, body string) error {
+	s.calls++
+	for i := range s.notes {
+		if s.notes[i].ID == id {
+			s.notes[i].Body = body
+			return nil
+		}
+	}
+	return gitlab.ErrNotFound
+}
+
+func (s *fakeStore) DeleteNote(_ context.Context, _ int, id int64) error {
+	s.calls++
+	for i := range s.notes {
+		if s.notes[i].ID == id {
+			s.notes = append(s.notes[:i], s.notes[i+1:]...)
+			return nil
+		}
+	}
+	return gitlab.ErrNotFound
+}
+
+func (s *fakeStore) body(t *testing.T) string {
+	t.Helper()
+	if len(s.notes) != 1 {
+		t.Fatalf("notes = %d, want 1", len(s.notes))
+	}
+	return s.notes[0].Body
+}
+
+type fakeMCP struct{ calls []string }
+
+func (m *fakeMCP) Call(_ context.Context, name string, _ map[string]any) (string, error) {
+	m.calls = append(m.calls, name)
+	if name == tfdocs.ToolLatestProviderVersion {
+		return "6.10.0", nil
+	}
+	return "", fmt.Errorf("fake mcp: unexpected tool %s", name)
+}
+
+type fakeDocs struct {
+	calls int
+	err   error
+}
+
+func (d *fakeDocs) Lookup(_ context.Context, _ tfmcp.Caller, p model.ProviderRef, resourceType string,
+	_ []string, _ int) (tfdocs.Excerpt, error) {
+	d.calls++
+	if d.err != nil {
+		return tfdocs.Excerpt{}, d.err
+	}
+	url := "https://registry.terraform.io/providers/" + p.Namespace + "/" + p.Name + "/" + p.Version + "/docs/resources/" + resourceType
+	return tfdocs.Excerpt{Text: docSecret + " text", DocURL: url}, nil
+}
+
+type fakeNarrator struct {
+	calls    int
+	in       llm.ReviewInput
+	findings []model.Finding
+	err      error
+}
+
+func (n *fakeNarrator) ReviewFindings(_ context.Context, in llm.ReviewInput) ([]model.Finding, error) {
+	n.calls++
+	n.in = in
+	return n.findings, n.err
+}
+
+func (n *fakeNarrator) PlanRisks(context.Context, model.PlanSummary) ([]string, error) {
+	return nil, errors.New("not used")
+}
+
+func (n *fakeNarrator) PlanFailure(context.Context, []string) (string, error) {
+	return "", errors.New("not used")
+}
+
+// --- fixtures ---
+
+const mainTF = `resource "google_storage_bucket" "logs" {
+  name     = "` + diffSecret + `"
+  location = "EU"
+}
+`
+
+const versionsTF = `terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 6.0"
+    }
+  }
+}
+`
+
+const lockHCL = `provider "registry.terraform.io/hashicorp/google" {
+  version = "6.8.0"
+}
+`
+
+const mainDiff = "@@ -1,3 +1,3 @@\n resource \"google_storage_bucket\" \"logs\" {\n-  name     = \"old\"\n+  name     = \"" + diffSecret + "\"\n   location = \"EU\"\n"
+
+const artifactJSON = `{"version":1,"results":[{"tool":"fmt","passed":true,"summary":"ok"}]}`
+
+type harness struct {
+	gl    *fakeGitLab
+	store *fakeStore
+	mcp   *fakeMCP
+	docs  *fakeDocs
+	nar   *fakeNarrator
+	logs  *bytes.Buffer
+}
+
+func newHarness() *harness {
+	return &harness{
+		gl: &fakeGitLab{
+			diffs: []gitlab.FileDiff{{OldPath: "env/main.tf", NewPath: "env/main.tf", Diff: mainDiff}},
+			files: map[string]string{
+				"env/main.tf":             mainTF,
+				"env/versions.tf":         versionsTF,
+				"env/.terraform.lock.hcl": lockHCL,
+			},
+			jobs:      []gitlab.Job{{ID: fakeJobID, Name: staticcheck.JobName}},
+			artifacts: map[int64][]byte{fakeJobID: []byte(artifactJSON)},
+		},
+		store: newFakeStore(),
+		mcp:   &fakeMCP{},
+		docs:  &fakeDocs{},
+		nar: &fakeNarrator{findings: []model.Finding{
+			{Resource: "google_storage_bucket.logs", Severity: "중간", Message: "버킷 이름 변경은 재생성을 유발합니다"},
+		}},
+		logs: &bytes.Buffer{},
+	}
+}
+
+func (h *harness) deps() Deps {
+	return Deps{
+		GitLab:   h.gl,
+		Notes:    h.store,
+		MCP:      h.mcp,
+		Narrator: h.nar,
+		Docs:     h.docs,
+		Config: config.Config{Limits: config.Limits{
+			DiffBytes: 10000, DocsBytes: 4000, PlanSummaryBytes: 4000, LLMOutputBytes: 4000,
+		}},
+		Log: slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+}
+
+func (h *harness) run(t *testing.T) error {
+	t.Helper()
+	return RunCode(context.Background(), h.deps(), input.Input{MRIID: 7, SHA: headSHA, PipelineID: 900})
+}
+
+func mustContain(t *testing.T, body string, wants ...string) {
+	t.Helper()
+	for _, w := range wants {
+		if !strings.Contains(body, w) {
+			t.Errorf("body lacks %q:\n%s", w, body)
+		}
+	}
+}
+
+// --- tests ---
+
+func TestRunCode_NormalPathCreatesOneNoteAndRerunKeepsOne(t *testing.T) {
+	h := newHarness()
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	body := h.store.body(t)
+	mustContain(t, body,
+		"<!-- tf-review:v1:code:- -->",
+		"버킷 이름 변경은 재생성을 유발합니다",
+		"https://registry.terraform.io/providers/hashicorp/google/6.8.0/docs/resources/google_storage_bucket",
+		"_근거: lock 파일의 provider 버전에 맞는 Terraform 공식 문서._",
+		"| fmt |",
+	)
+	if strings.Contains(body, "변경이 커서 일부만 검토했습니다.") {
+		t.Errorf("body unexpectedly marked truncated")
+	}
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode rerun: %v", err)
+	}
+	h.store.body(t)
+}
+
+func TestRunCode_ReviewInputContents(t *testing.T) {
+	h := newHarness()
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	in := h.nar.in
+	if len(in.Resources) != 1 {
+		t.Fatalf("resources = %+v", in.Resources)
+	}
+	r := in.Resources[0]
+	if r.Address != "google_storage_bucket.logs" || r.File != "env/main.tf" {
+		t.Errorf("resource = %+v", r)
+	}
+	if r.DiffExcerpt != mainDiff || !strings.Contains(r.DocExcerpt, docSecret) {
+		t.Errorf("excerpts not filled: %+v", r)
+	}
+	if len(in.Checks) != 4 || in.Checks[0].Tool != "fmt" {
+		t.Errorf("checks = %+v", in.Checks)
+	}
+	if len(h.mcp.calls) != 0 {
+		t.Errorf("lock basis should not call MCP, got %v", h.mcp.calls)
+	}
+}
+
+func TestRunCode_ModulesGoToModuleContext(t *testing.T) {
+	h := newHarness()
+	h.gl.files["env/main.tf"] = "module \"net\" {\n  source  = \"terraform-google-modules/network/google\"\n  version = \"9.0.0\"\n}\n"
+	h.gl.diffs[0].Diff = "@@ -0,0 +1,4 @@\n+module \"net\" {\n+  source  = \"terraform-google-modules/network/google\"\n+  version = \"9.0.0\"\n+}\n"
+	h.nar.findings = nil
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	want := llm.ModuleContext{Name: "net", Source: "terraform-google-modules/network/google", Version: "9.0.0"}
+	if len(h.nar.in.Modules) != 1 || h.nar.in.Modules[0] != want {
+		t.Errorf("modules = %+v", h.nar.in.Modules)
+	}
+	mustContain(t, h.store.body(t), "_공식 문서 근거를 사용하지 않았습니다._")
+}
+
+func TestRunCode_NoTFChangesPostsNothing(t *testing.T) {
+	h := newHarness()
+	h.gl.diffs = []gitlab.FileDiff{
+		{OldPath: "env/prod.tfvars", NewPath: "env/prod.tfvars", Diff: "@@ -1 +1 @@\n-a = 1\n+a = 2\n"},
+		{OldPath: "README.md", NewPath: "README.md", Diff: "@@ -1 +1 @@\n-x\n+y\n"},
+	}
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	if h.store.calls != 0 || h.nar.calls != 0 {
+		t.Errorf("notes calls = %d, narrator calls = %d; want 0, 0", h.store.calls, h.nar.calls)
+	}
+}
+
+func TestRunCode_DiffOverCapIsMarkedTruncated(t *testing.T) {
+	h := newHarness()
+	d := h.deps()
+	d.Config.Limits.DiffBytes = 20
+	if err := RunCode(context.Background(), d, input.Input{MRIID: 7, SHA: headSHA, PipelineID: 900}); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	mustContain(t, h.store.body(t), "> 변경이 커서 일부만 검토했습니다.")
+	if !h.nar.in.DiffTruncated || len(h.nar.in.Resources[0].DiffExcerpt) > 20 {
+		t.Errorf("review input not capped: %+v", h.nar.in)
+	}
+}
+
+func TestRunCode_NonTFDiffsDoNotCountTowardCap(t *testing.T) {
+	h := newHarness()
+	h.gl.diffs = append(h.gl.diffs, gitlab.FileDiff{OldPath: "README.md", NewPath: "README.md",
+		Diff: strings.Repeat("x", 20000)})
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	if h.nar.in.DiffTruncated {
+		t.Errorf("non-.tf diff should not trigger truncation")
+	}
+}
+
+func TestRunCode_CollapsedModifiedDiffIsMarkedTruncated(t *testing.T) {
+	h := newHarness()
+	h.gl.files["env/other.tf"] = "resource \"google_storage_bucket\" \"other\" {\n  location = \"EU\"\n}\n"
+	h.gl.diffs = append(h.gl.diffs, gitlab.FileDiff{OldPath: "env/other.tf", NewPath: "env/other.tf"})
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	mustContain(t, h.store.body(t), "> 변경이 커서 일부만 검토했습니다.")
+}
+
+func TestRunCode_VersionNoneShowsNoDocEvidence(t *testing.T) {
+	h := newHarness()
+	delete(h.gl.files, "env/.terraform.lock.hcl")
+	h.gl.files["env/versions.tf"] = strings.Replace(versionsTF, "~> 6.0", "~> 5.0", 1)
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	mustContain(t, h.store.body(t), "_공식 문서 근거를 사용하지 않았습니다._")
+	if h.docs.calls != 0 {
+		t.Errorf("docs looked up without a version")
+	}
+}
+
+func TestRunCode_ConstraintBasisUsesLatestVersion(t *testing.T) {
+	h := newHarness()
+	delete(h.gl.files, "env/.terraform.lock.hcl")
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	mustContain(t, h.store.body(t), "_근거: 버전 제약 조건에 맞춘", "/hashicorp/google/6.10.0/")
+}
+
+func TestRunCode_LookupFailureFallsBackToNone(t *testing.T) {
+	h := newHarness()
+	h.docs.err = tfdocs.ErrDocNotFound
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	body := h.store.body(t)
+	mustContain(t, body, "_공식 문서 근거를 사용하지 않았습니다._")
+	if strings.Contains(body, "registry.terraform.io") {
+		t.Errorf("failed lookup should leave no DocRef:\n%s", body)
+	}
+	mustContain(t, h.logs.String(), "google_storage_bucket.logs")
+}
+
+func TestRunCode_LLMErrorPostsAnalysisFailedAndReturnsError(t *testing.T) {
+	h := newHarness()
+	h.nar.err = errors.New("model unavailable")
+	err := h.run(t)
+	if err == nil || !errors.Is(err, h.nar.err) {
+		t.Fatalf("err = %v, want wrapped LLM error", err)
+	}
+	mustContain(t, h.store.body(t), "> 분석 실패:", "소견을 생성하지 못했습니다.")
+}
+
+func TestRunCode_NoStaticCheckArtifact(t *testing.T) {
+	for name, mutate := range map[string]func(*fakeGitLab){
+		"no job":      func(g *fakeGitLab) { g.jobs = nil },
+		"no artifact": func(g *fakeGitLab) { g.artifacts = nil },
+		"bad json":    func(g *fakeGitLab) { g.artifacts[fakeJobID] = []byte("{") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness()
+			mutate(h.gl)
+			if err := h.run(t); err != nil {
+				t.Fatalf("RunCode: %v", err)
+			}
+			mustContain(t, h.store.body(t), "정적 검사 결과 없음")
+		})
+	}
+}
+
+func TestRunCode_PipelineJobsErrorIsReturned(t *testing.T) {
+	h := newHarness()
+	h.gl.jobsErr = errors.New("gitlab 500")
+	if err := h.run(t); !errors.Is(err, h.gl.jobsErr) {
+		t.Fatalf("err = %v, want wrapped jobs error", err)
+	}
+}
+
+func TestRunCode_PrivateProviderMakesNoMCPCalls(t *testing.T) {
+	h := newHarness()
+	delete(h.gl.files, "env/.terraform.lock.hcl")
+	h.gl.files["env/versions.tf"] = strings.Replace(versionsTF, "hashicorp/google", "registry.example.com/acme/google", 1)
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	if len(h.mcp.calls) != 0 || h.docs.calls != 0 {
+		t.Errorf("mcp calls = %v, docs calls = %d; want none", h.mcp.calls, h.docs.calls)
+	}
+	mustContain(t, h.store.body(t), "_공식 문서 근거를 사용하지 않았습니다._")
+}
+
+func TestRunCode_StaleHeadReturnsNil(t *testing.T) {
+	h := newHarness()
+	h.store.sha = "ffffffffffffffffffffffffffffffffffffffff"
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v, want nil on stale head", err)
+	}
+	if len(h.store.notes) != 0 {
+		t.Errorf("stale run wrote notes")
+	}
+}
+
+func TestRunCode_LogsCarryNoPayloads(t *testing.T) {
+	h := newHarness()
+	h.gl.artifacts[fakeJobID] = []byte("{")
+	h.docs.err = fmt.Errorf("lookup: %w", tfdocs.ErrDocNotFound)
+	h.nar.err = errors.New("model unavailable")
+	_ = h.run(t)
+	h2 := newHarness()
+	_ = h2.run(t)
+	logs := h.logs.String() + h2.logs.String()
+	if logs == "" {
+		t.Fatal("expected some logs")
+	}
+	for _, s := range []string{diffSecret, docSecret, tokenSecret, "location"} {
+		if strings.Contains(logs, s) {
+			t.Errorf("logs contain %q:\n%s", s, logs)
+		}
+	}
+}

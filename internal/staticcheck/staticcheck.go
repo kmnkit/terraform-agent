@@ -14,6 +14,8 @@ import (
 const (
 	// ArtifactName is the plain file name of the artifact produced by the CI static-check job.
 	ArtifactName = "tf-review-staticcheck.json"
+	// JobName is the name of the CI job that produces the artifact.
+	JobName = "tf-review-staticcheck"
 	// SummaryUnknown is the summary reported for a known tool absent from the artifact.
 	SummaryUnknown = "unknown"
 	// MaxSummaryRunes caps a summary, including the truncation marker.
