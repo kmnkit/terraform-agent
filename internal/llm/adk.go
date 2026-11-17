@@ -23,6 +23,8 @@ const (
 	appName     = "tf-review"
 	userID      = "tf-review"
 	temperature = float32(0.2)
+	// maxOutputTokens bounds one response (findings are capped separately).
+	maxOutputTokens = int32(4096)
 	// maxLLMCalls: the agent has no tools, so exactly one model call is expected.
 	maxLLMCalls = 1
 )
@@ -127,7 +129,7 @@ func (n adkNarrator) generate(ctx context.Context, prompt string, schema *genai.
 		Name:                  "narrator",
 		Model:                 n.llm,
 		OutputSchema:          schema,
-		GenerateContentConfig: &genai.GenerateContentConfig{Temperature: &temp},
+		GenerateContentConfig: &genai.GenerateContentConfig{Temperature: &temp, MaxOutputTokens: maxOutputTokens},
 	})
 	if err != nil {
 		return "", fmt.Errorf("llm: create agent: %w", err)

@@ -58,6 +58,9 @@ func requireStructured(t *testing.T, req *model.LLMRequest, prop string) {
 	if req.Config.Temperature == nil || *req.Config.Temperature > 0.3 {
 		t.Errorf("temperature not low: %v", req.Config.Temperature)
 	}
+	if req.Config.MaxOutputTokens != maxOutputTokens {
+		t.Errorf("MaxOutputTokens = %d, want %d", req.Config.MaxOutputTokens, maxOutputTokens)
+	}
 	if len(req.Tools) != 0 {
 		t.Errorf("tools registered: %d", len(req.Tools))
 	}
