@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,56 @@ func TestRun_BadTaskEnvFailsBeforeConfig(t *testing.T) {
 	err := run(context.Background(), strings.Fields(validArgs), func(string) string { return "" })
 	if err == nil || !strings.Contains(err.Error(), "CLOUD_RUN_TASK_COUNT") {
 		t.Fatalf("err = %v, want task env error", err)
+	}
+}
+
+func TestRun_GODEBUGFailsFast(t *testing.T) {
+	var asked []string
+	getenv := func(k string) string {
+		asked = append(asked, k)
+		if k == envGODEBUG {
+			return "http2debug=1"
+		}
+		return taskEnv(k)
+	}
+	err := run(context.Background(), strings.Fields(validArgs), getenv)
+	if err == nil || !strings.Contains(err.Error(), "GODEBUG") {
+		t.Fatalf("err = %v, want GODEBUG error", err)
+	}
+	if !slices.Equal(asked, []string{envGODEBUG}) {
+		t.Fatalf("env reads = %v, want GODEBUG checked first and alone", asked)
+	}
+	if strings.Contains(err.Error(), "http2debug") {
+		t.Fatalf("error echoes the env value: %v", err)
+	}
+}
+
+// TestRun_ReadsOnlyFixedEnvKeys pins the env keys the program reads itself.
+// Standard and library code read others implicitly (see the operations doc).
+func TestRun_ReadsOnlyFixedEnvKeys(t *testing.T) {
+	keys := map[string]bool{}
+	_ = run(context.Background(), strings.Fields(validArgs), func(k string) string {
+		keys[k] = true
+		return taskEnv(k)
+	})
+	want := map[string]bool{envGODEBUG: true, "CLOUD_RUN_TASK_COUNT": true, "CLOUD_RUN_TASK_INDEX": true}
+	if len(keys) != len(want) {
+		t.Fatalf("env keys read = %v, want %v", keys, want)
+	}
+	for k := range want {
+		if !keys[k] {
+			t.Fatalf("env keys read = %v, want %v", keys, want)
+		}
+	}
+}
+
+func TestRun_DiscardsStandardLogger(t *testing.T) {
+	orig := log.Writer()
+	defer log.SetOutput(orig)
+	log.SetOutput(os.Stderr)
+	_ = run(context.Background(), []string{"--mr-iid=x"}, taskEnv)
+	if log.Writer() != io.Discard {
+		t.Fatal("run must route the standard logger to io.Discard")
 	}
 }
 

@@ -5,7 +5,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -31,10 +34,13 @@ const (
 	// llmTimeout bounds one Vertex AI request; a response is capped at a few
 	// thousand output tokens, so minutes are ample.
 	llmTimeout = 3 * time.Minute
+	// envGODEBUG is read only to refuse it: settings such as http2debug make
+	// the standard library log request headers, tokens included.
+	envGODEBUG = "GODEBUG"
 )
 
-// main is the only place that touches os.Getenv, and only to hand it to
-// input.Parse via run. run logs its own error with the masking logger.
+// main is the only place that touches os.Getenv, and only to hand it to run
+// (GODEBUG check, input.Parse). run logs its own error with the masking logger.
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Getenv); err != nil {
 		os.Exit(1)
@@ -49,8 +55,16 @@ type job struct {
 }
 
 // run returns its error after logging it. Errors before the masking logger
-// exists come from input, config and token-file reads, which hold no secrets.
+// exists come from the GODEBUG check, input, config and token-file reads,
+// which hold no secrets. The standard logger is discarded first: only the
+// masking logger may write.
 func run(ctx context.Context, args []string, getenv func(string) string) error {
+	log.SetOutput(io.Discard)
+	if getenv(envGODEBUG) != "" {
+		err := errors.New("tf-review: GODEBUG must not be set")
+		logx.New(os.Stderr, nil).Error("tf-review: startup failed", "error", err)
+		return err
+	}
 	httpx.DisableEnvProxy()
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

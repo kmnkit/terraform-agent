@@ -101,3 +101,44 @@ func TestNewClient_OwnTransport(t *testing.T) {
 		t.Fatal("Proxy must be nil")
 	}
 }
+
+func assertHTTP2Disabled(t *testing.T, tr *http.Transport) {
+	t.Helper()
+	if tr.ForceAttemptHTTP2 {
+		t.Error("ForceAttemptHTTP2 must be false")
+	}
+	if tr.TLSNextProto == nil || len(tr.TLSNextProto) != 0 {
+		t.Errorf("TLSNextProto must be an empty non-nil map, got %v", tr.TLSNextProto)
+	}
+}
+
+// HTTP/2 is disabled because GODEBUG=http2debug makes the h2 transport log
+// request headers (tokens) through the standard logger.
+func TestNewClient_HTTP1Only(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+	c := NewClient(5 * time.Second)
+	tr := c.Transport.(*http.Transport)
+	assertHTTP2Disabled(t, tr)
+	tr.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	resp, err := c.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.ProtoMajor != 1 {
+		t.Fatalf("protocol = %s, want HTTP/1.x", resp.Proto)
+	}
+}
+
+func TestDisableEnvProxy_DisablesHTTP2OnDefaultTransport(t *testing.T) {
+	orig := http.DefaultTransport
+	http.DefaultTransport = orig.(*http.Transport).Clone()
+	defer func() { http.DefaultTransport = orig }()
+	DisableEnvProxy()
+	assertHTTP2Disabled(t, http.DefaultTransport.(*http.Transport))
+}

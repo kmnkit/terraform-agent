@@ -91,7 +91,7 @@ func TestAggregateNegativeMaxTargets(t *testing.T) {
 }
 
 func TestAggregateNestedAfterUnknownAndNumbers(t *testing.T) {
-	js := `{"resource_changes":[{"address":"a.b","change":{"actions":["update"],
+	js := `{"format_version":"1.2","resource_changes":[{"address":"a.b","change":{"actions":["update"],
 	  "before":{"big":12345678901234567890,"same":{"x":[1,2]}},
 	  "after":{"big":12345678901234567891,"same":{"x":[1,2]}},
 	  "after_unknown":{"nested":{"deep":[{"id":true}]},"known":{"x":false},"top":true}}}]}`
@@ -105,9 +105,28 @@ func TestAggregateNestedAfterUnknownAndNumbers(t *testing.T) {
 	}
 }
 
-func TestAggregateEmpty(t *testing.T) {
-	sum, err := Aggregate([]byte(`{}`), 5)
+func TestAggregateNoChangePlan(t *testing.T) {
+	// Terraform omits resource_changes for a no-change plan.
+	sum, err := Aggregate([]byte(`{"format_version":"1.2","terraform_version":"1.17.2"}`), 5)
 	if err != nil || sum.Add+sum.Change+sum.Destroy+sum.Replace != 0 || len(sum.Targets) != 0 {
 		t.Fatalf("sum=%+v err=%v", sum, err)
+	}
+}
+
+func TestAggregateRejectsWrongShape(t *testing.T) {
+	for name, js := range map[string]string{
+		"empty object":       `{}`,
+		"null":               `null`,
+		"JSON:API wrapper":   `{"data":{"type":"plans","attributes":{"resource_changes":[]}}}`,
+		"changes no version": `{"resource_changes":[{"address":"a.b","change":{"actions":["create"]}}]}`,
+		"empty version":      `{"format_version":""}`,
+		"numeric version":    `{"format_version":1}`,
+		"array":              `[]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Aggregate([]byte(js), 5); err == nil {
+				t.Fatal("want error for a document that is not a Terraform JSON plan")
+			}
+		})
 	}
 }

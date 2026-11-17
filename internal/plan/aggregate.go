@@ -24,12 +24,21 @@ type resourceChange struct {
 // resource, the address, action and names of changed top-level attributes.
 // Values are only compared, never copied; prior_state, planned_values,
 // variables, configuration and output_changes are not decoded at all.
+//
+// The document must carry a non-empty top-level format_version: any other
+// valid JSON (an API wrapper, an error object, {}) would otherwise read as a
+// plan without changes. resource_changes is not required, because Terraform
+// omits it for a plan with no changes.
 func Aggregate(planJSON []byte, maxTargets int) (model.PlanSummary, error) {
 	var doc struct {
+		FormatVersion   string           `json:"format_version"`
 		ResourceChanges []resourceChange `json:"resource_changes"`
 	}
 	if err := json.Unmarshal(planJSON, &doc); err != nil {
 		return model.PlanSummary{}, errors.New("plan: plan JSON is not valid")
+	}
+	if doc.FormatVersion == "" {
+		return model.PlanSummary{}, errors.New("plan: plan JSON has no format_version")
 	}
 	var sum model.PlanSummary
 	var targets []model.Target
