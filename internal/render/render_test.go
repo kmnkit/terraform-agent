@@ -256,3 +256,30 @@ func TestFailureLineBreaksCannotExposeQuickAction(t *testing.T) {
 		}
 	}
 }
+
+func TestDocRefTrustedOnlyForRegistryURL(t *testing.T) {
+	const good = "https://registry.terraform.io/providers/hashicorp/google/latest/docs"
+	tests := []struct {
+		name, ref, want string
+	}{
+		{"registry url kept", good, "| " + good + " |"},
+		{"other host neutralized", "https://evil.example/x", "|  |"},
+		{"registry prefix with link syntax", good + ")[x](http://e)", "| )x |"},
+		{"registry prefix with space", good + " @user", "|  @\u200buser |"},
+		{"registry prefix with angle", good + "<img src=x>", "|  |"},
+	}
+	for _, tc := range tests {
+		v := codeView()
+		v.Findings = []model.Finding{{Resource: "r", Severity: "low", Message: "m", DocRef: tc.ref}}
+		body := CodeReview(v)
+		row := ""
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "| low |") {
+				row = line
+			}
+		}
+		if !strings.HasSuffix(row, tc.want) {
+			t.Errorf("%s: row %q does not end with %q", tc.name, row, tc.want)
+		}
+	}
+}

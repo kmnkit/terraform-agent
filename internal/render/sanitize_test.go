@@ -36,6 +36,14 @@ func TestSanitize(t *testing.T) {
 		{"truncate keeps runes whole", "😀😀😀😀", 3, "😀😀…"},
 		{"limit one", "abc", 1, "…"},
 		{"limit zero", "abc", 0, ""},
+		{"www host broken", "go www.evil.example now", 100, "go www." + zw + "evil.example now"},
+		{"ftp broken", "ftp://e/x", 100, "ftp:" + zw + "//e/x"},
+		{"mailto broken", "mailto:a@b.c", 100, "mailto:" + zw + "a@" + zw + "b.c"},
+		{"bare email broken", "a@b.co", 100, "a@" + zw + "b.co"},
+		{"brackets escaped", "see [ref] now", 100, "see &#91;ref&#93; now"},
+		{"angle brackets escaped", "a < b > c", 100, "a &lt; b &gt; c"},
+		{"split reference not a link", "[ref]:\nhttp://e\n\n[ref]", 100, "&#91;ref&#93;:\n\n\n&#91;ref&#93;"},
+		{"shortcut reference with definition", "see [ref]\n\n[ref]: http://e", 100, "see &#91;ref&#93;"},
 		{"lone CR before slash", "a\r/merge", 100, "a\n" + zw + "/merge"},
 		{"decimal entity mention", "&#64;user", 100, "&amp;#64;user"},
 		{"hex entity mention", "&#x40;user", 100, "&amp;#x40;user"},
@@ -73,7 +81,7 @@ func TestSanitizeLeavesNoMarkerDelimiters(t *testing.T) {
 }
 
 func TestSanitizeIsIdempotent(t *testing.T) {
-	in := "R&D &#64;user @bob\n/merge [x][r] https://e.example"
+	in := "R&D &#64;user @bob\n/merge [x][r] [s] a<b www.e.example ftp://e mailto:a@b.c https://e.example"
 	once := Sanitize(in, 200)
 	if twice := Sanitize(once, 200); twice != once {
 		t.Fatalf("not idempotent: %q vs %q", once, twice)

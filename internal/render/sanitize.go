@@ -19,7 +19,9 @@ var (
 	mdRefLink   = regexp.MustCompile(`\[([^\]]*)\]\[[^\]]*\]`)
 	mdRefDef    = regexp.MustCompile(`(?m)^[ \t]{0,3}\[[^\]]+\]:[ \t]*\S.*$`)
 	bareURL     = regexp.MustCompile(`https?://[^\s<>)\]]*`)
-	ampersand   = regexp.MustCompile(`&(amp;)?`)
+	ampersand   = regexp.MustCompile(`&(amp;|lt;|gt;|#91;|#93;)?`)
+	wwwHost     = regexp.MustCompile(`(?i)www\.\x{200b}?`)
+	scheme      = regexp.MustCompile(`(?i)\b(https?|ftp|mailto):\x{200b}?`)
 	htmlTag     = regexp.MustCompile(`<[!?/A-Za-z][^>]*>`)
 	mention     = regexp.MustCompile(`@(\w)`)
 	lineSlash   = regexp.MustCompile(`(?m)^([ \t]*)/`)
@@ -45,15 +47,29 @@ var lineEndings = strings.NewReplacer("\r\n", "\n", "\r", "\n")
 func neutralize(text string) string {
 	text = lineEndings.Replace(text)
 	text = stripMarkup(text)
-	text = ampersand.ReplaceAllStringFunc(text, escapeAmpersand)
+	text = breakAutolinks(text)
+	text = bracketEscaper.Replace(ampersand.ReplaceAllStringFunc(text, escapeAmpersand))
 	text = mention.ReplaceAllString(text, "@"+zeroWidthSpace+"$1")
 	return lineSlash.ReplaceAllString(text, "$1"+zeroWidthSpace+"/")
 }
 
-// escapeAmpersand turns "&" into "&amp;" but leaves an existing "&amp;" alone,
-// which keeps neutralize idempotent and is harmless since it renders as "&".
+// bracketEscaper turns characters that can form link or HTML syntax into
+// entities, so no inline, reference or shortcut link can be built from text.
+var bracketEscaper = strings.NewReplacer("[", "&#91;", "]", "&#93;", "<", "&lt;", ">", "&gt;")
+
+// breakAutolinks inserts a zero-width space after "www." and after http,
+// https, ftp and mailto schemes so GitLab does not autolink them. Existing
+// zero-width spaces are not doubled, which keeps neutralize idempotent.
+func breakAutolinks(text string) string {
+	text = wwwHost.ReplaceAllString(text, "www."+zeroWidthSpace)
+	return scheme.ReplaceAllString(text, "${1}:"+zeroWidthSpace)
+}
+
+// escapeAmpersand turns "&" into "&amp;" but leaves "&amp;" and the entities
+// bracketEscaper produces alone. They only render as literal characters, and
+// keeping them makes neutralize idempotent.
 func escapeAmpersand(m string) string {
-	if m == "&amp;" {
+	if m != "&" {
 		return m
 	}
 	return "&amp;"

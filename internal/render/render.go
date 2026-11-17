@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+	"unicode"
 
 	"github.com/terraform-agent/internal/model"
 )
@@ -55,6 +56,7 @@ var funcs = template.FuncMap{
 	"code":   codeSpan,
 	"cell":   plainCell,
 	"text":   safeCell,
+	"docref": docRefCell,
 	"line":   safeLine,
 	"attrs":  attrList,
 	"passed": passedLabel,
@@ -90,7 +92,7 @@ var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker
 | 심각도 | 리소스 | 내용 | 문서 |
 | --- | --- | --- | --- |
 {{range .Findings -}}
-| {{text .Severity}} | {{code .Resource}} | {{text .Message}} | {{cell .DocRef}} |
+| {{text .Severity}} | {{code .Resource}} | {{text .Message}} | {{docref .DocRef}} |
 {{end -}}
 {{else if .AnalysisFailed}}
 소견을 생성하지 못했습니다.
@@ -191,6 +193,21 @@ var lineBreaks = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
 // oneLine collapses line breaks into single spaces.
 func oneLine(s string) string {
 	return lineBreaks.Replace(s)
+}
+
+const trustedDocPrefix = "https://registry.terraform.io/"
+
+// docRefCell renders DocRef as a plain link only when it is a well-formed
+// registry URL; anything else may come from the LLM and is neutralized.
+func docRefCell(s string) string {
+	if strings.HasPrefix(s, trustedDocPrefix) && !strings.ContainsFunc(s, unsafeInURL) {
+		return plainCell(s)
+	}
+	return safeCell(s)
+}
+
+func unsafeInURL(r rune) bool {
+	return unicode.IsSpace(r) || strings.ContainsRune("<>()[]", r)
 }
 
 // safeCell neutralizes untrusted text, then makes it safe for a table cell.
