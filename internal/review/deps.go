@@ -35,11 +35,17 @@ type DocLookuper interface {
 		attrs []string, maxBytes int) (tfdocs.Excerpt, error)
 }
 
+// ToolVerifier checks that every allowlisted MCP tool is served.
+type ToolVerifier interface {
+	VerifyTools(ctx context.Context) error
+}
+
 // Deps are the collaborators of the review flows.
 type Deps struct {
 	GitLab   GitLabReader
 	Notes    publish.NoteStore
 	MCP      tfmcp.Caller
+	Tools    ToolVerifier // used by Run's startup checks
 	Narrator llm.Narrator
 	Docs     DocLookuper
 	Config   config.Config
@@ -51,4 +57,5 @@ var (
 	_ GitLabReader      = (*gitlab.Client)(nil)
 	_ publish.NoteStore = (*gitlab.Client)(nil)
 	_ DocLookuper       = (*tfdocs.Lookuper)(nil)
+	_ ToolVerifier      = (*tfmcp.Client)(nil)
 )

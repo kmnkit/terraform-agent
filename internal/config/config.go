@@ -19,6 +19,9 @@ const (
 	TfeAddress = "https://app.terraform.io"
 	// DefaultGitlabBaseURL is used when gitlabBaseURL is empty.
 	DefaultGitlabBaseURL = "https://gitlab.com"
+	// ProcessDeadline bounds one job run. Workspaces are waited sequentially,
+	// so waits.total x len(workspaces) must fit inside it.
+	ProcessDeadline = 40 * time.Minute
 )
 
 var locationPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -136,7 +139,23 @@ func validate(c Config) error {
 	if c.Waits.Initial <= 0 || c.Waits.Total <= 0 {
 		errs = append(errs, errors.New("waits.initial and waits.total are required"))
 	}
+	if err := validateTotalWait(c.Waits.Total, len(c.Workspaces)); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// validateTotalWait divides instead of multiplying so huge totals cannot
+// overflow into a pass. For integers, t*n <= D is equivalent to t <= D/n.
+func validateTotalWait(total time.Duration, workspaces int) error {
+	if workspaces == 0 {
+		return nil // reported by validateWorkspaces
+	}
+	if total > ProcessDeadline/time.Duration(workspaces) {
+		return fmt.Errorf("waits.total %s x %d workspaces exceeds the %s process deadline",
+			total, workspaces, ProcessDeadline)
+	}
+	return nil
 }
 
 func validateStrings(c Config) []error {
