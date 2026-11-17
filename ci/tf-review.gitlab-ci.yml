@@ -92,13 +92,14 @@ tf-review-trigger:
   id_tokens:
     GCP_ID_TOKEN:
       aud: "https://iam.googleapis.com/${TF_REVIEW_WIF_PROVIDER}"
-  variables:
-    # PROVISIONAL (Phase 0 B): merged-results pipelines use a merge commit in CI_COMMIT_SHA
-    TF_REVIEW_SHA: "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}"
   script:
     - |
       : "${TF_REVIEW_PROJECT:?}" "${TF_REVIEW_REGION:?}" "${TF_REVIEW_JOB:?}"
       : "${TF_REVIEW_WIF_PROVIDER:?}" "${TF_REVIEW_TRIGGER_SA:?}"
+    # GitLab variable expansion has no shell defaults, so the shell computes the
+    # SHA (script lines share one shell).
+    # PROVISIONAL (Phase 0 B): merged-results pipelines use a merge commit in CI_COMMIT_SHA
+    - TF_REVIEW_SHA="${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}"
     - printf '%s' "$GCP_ID_TOKEN" > /tmp/gitlab-id-token
     - >
       gcloud iam workload-identity-pools create-cred-config

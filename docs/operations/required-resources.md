@@ -53,7 +53,42 @@ gcloud iam service-accounts add-iam-policy-binding \
   --role="roles/iam.workloadIdentityUser"
 ```
 
-`roles/run.jobsExecutorWithOverrides`는 실행 시 args, env, task 수, timeout을 바꿀 수 있는 권한이다. 에이전트는 이 중 args의 `--mr-iid`, `--sha`, `--pipeline-id`만 읽는다. 보안 설정(허용 GitLab project ID, 주소, tool 허용 목록, 모델 이름)은 이미지 안 파일에서만 읽고, task 수가 1이 아니면 실행하지 않으며, 코드가 읽는 env는 고정된 짧은 목록뿐이다. CI 템플릿도 args 외의 override를 쓰지 않는다. 트리거 SA 한 개가 impersonation 후 job 실행에 성공하는지는 종단 검증(설계 문서 Phase 0 항목 6)에서 확인한다.
+`roles/run.jobsExecutorWithOverrides`는 실행 시 args, env, task 수, timeout을 바꿀 수 있는 권한이다. 에이전트는 이 중 args의 `--mr-iid`, `--sha`, `--pipeline-id`만 입력으로 받는다. 보안 설정(허용 GitLab project ID, 주소, tool 허용 목록, 모델 이름)은 이미지 안 파일에서만 읽고, task 수가 1이 아니면 실행하지 않는다. CI 템플릿도 args 외의 override를 쓰지 않는다. 트리거 SA 한 개가 impersonation 후 job 실행에 성공하는지는 종단 검증(설계 문서 Phase 0 항목 6)에서 확인한다.
+
+에이전트 코드가 직접 읽는 env는 `CLOUD_RUN_TASK_COUNT`, `CLOUD_RUN_TASK_INDEX`, `GODEBUG` 세 개뿐이다(`GODEBUG`는 값이 있으면 즉시 실패하기 위해서만 읽는다). 다만 Go 표준 라이브러리와 사용 라이브러리는 env를 암묵적으로 읽으므로, env override로 동작이 바뀔 수 있는 여지가 남는다.
+
+| env | 읽는 쪽 | 영향 | 에이전트의 대응 |
+| --- | --- | --- | --- |
+| `GODEBUG` | Go 런타임, `net/http` | `http2debug` 등은 요청 헤더(토큰 포함)를 표준 로그로 출력한다 | 값이 있으면 시작 즉시 실패한다. 추가로 HTTP/2를 끄고 표준 `log` 출력을 버린다 |
+| `SSL_CERT_FILE`, `SSL_CERT_DIR` | `crypto/x509` | 신뢰할 루트 인증서를 바꾼다. 이미지 밖 경로는 컨테이너에 없으므로 대개 TLS 실패(DoS)로 끝난다 | 없음(잔여 위험) |
+| `TMPDIR` | `os.TempDir` | MCP 자식 프로세스의 임시 HOME 위치가 바뀐다 | 없음. 쓰기 불가 경로면 시작 실패 |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Google 인증 라이브러리(ADC) | Vertex AI 호출에 쓸 자격 증명 파일을 바꾼다. 컨테이너 안 파일만 가리킬 수 있다 | 없음. 잘못된 값이면 Vertex 호출 실패 |
+| `GCE_METADATA_HOST` | Google metadata 클라이언트 | metadata 서버 주소를 바꿔 ADC 토큰 요청을 다른 호스트로 보낼 수 있다 | 없음(잔여 위험, 아래 신뢰 경계 참고) |
+
+프록시 env(`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`)는 모든 HTTP 클라이언트가 무시한다.
+
+## 신뢰 경계
+
+트리거 경로의 신뢰 경계는 "대상 GitLab project에 push할 수 있는 사람"이다. push 권한이 있으면 누구나 `.gitlab-ci.yml`을 고쳐 MR pipeline에서 ID token을 발급받고, WIF로 트리거 SA를 impersonation해 임의의 override(args, env, task 수, timeout)로 job을 실행할 수 있다. 템플릿을 거치지 않는 실행도 막을 수 없다고 가정한다.
+
+에이전트의 방어:
+
+- 입력 검증: args는 `--mr-iid`, `--sha`(40자리 소문자 hex), `--pipeline-id`만 받고 형식을 엄격히 검사한다.
+- Preflight: MR의 target·source project가 이미지에 고정한 허용 project ID와 같은지(fork 거부), `--sha`가 MR의 현재 head인지, `--pipeline-id`가 그 MR의 해당 SHA pipeline인지 GitLab API로 확인한다. 통과하기 전에는 MCP 서버를 띄우거나 Vertex 자격 증명을 만들지 않는다.
+- task 수 1, task index 0이 아니면 실행하지 않는다.
+- env: `GODEBUG`가 있으면 즉시 실패한다. 나머지 env는 위 표대로 판별하지 않는다.
+- 설정은 이미지 안 파일에서만, 토큰은 볼륨 마운트 파일에서만 읽는다. MCP 자식 프로세스에는 명시한 env만 넘긴다.
+- 프로세스 내부 deadline(40분)이 override된 task timeout과 무관하게 실행 시간을 제한한다.
+
+남는 위험:
+
+- 비용 남용: 같은 project의 MR이면 push 권한자가 job을 반복 실행해 LLM 비용을 늘릴 수 있다.
+- 암묵적으로 읽히는 env(위 표의 `SSL_CERT_*`, `TMPDIR`, `GOOGLE_APPLICATION_CREDENTIALS`, `GCE_METADATA_HOST`)로 실행을 실패시키는 DoS, 또는 `GCE_METADATA_HOST`로 job SA의 ADC 토큰 요청을 다른 호스트로 보내는 공격.
+
+선택 강화:
+
+- WIF provider attribute condition에 `assertion.pipeline_source == 'merge_request_event'`를 더해 MR pipeline에서 발급된 ID token만 받는다(claim 이름은 Phase 0 B에서 확인).
+- 대상 저장소가 템플릿을 `include`할 때 `ref`를 이동 branch가 아닌 tag나 커밋 SHA로 고정한다.
 
 ## job SA
 
@@ -77,7 +112,7 @@ done
 | secret (예시 이름) | 마운트 경로 | 내용 |
 | --- | --- | --- |
 | `gitlab-token` | `/secrets/gitlab/token` | GitLab project access token(MR diff과 파일 읽기, note 작성) |
-| `tfe-token` | `/secrets/tfe/token` | HCP Terraform team token(plan 읽기 전용 권한) |
+| `tfe-token` | `/secrets/tfe/token` | HCP Terraform team token. 대상 workspace에 한정한 workspace admin 수준 권한(plan JSON endpoint가 admin 수준 token만 허용하기 때문, 설계 문서 3절과 8절). 쓰기 기능은 MCP `--tools` 허용 목록으로 끈다. 실제 권한 경계는 token 권한이므로 파일럿은 prod가 아닌 workspace로 시작한다 |
 
 경로는 이미지 안 `config.json`의 `tokenFiles`와 일치해야 한다. 값은 env로 주입하지 않고 볼륨 마운트 파일로만 읽는다.
 

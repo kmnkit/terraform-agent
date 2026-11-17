@@ -1,6 +1,7 @@
 package ci_test
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -141,6 +142,33 @@ func TestTemplate_TriggerArgsAreExactlyThreeFlags(t *testing.T) {
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("args = %v, want %v", got, want)
+	}
+}
+
+// GitLab variable expansion has no shell defaults (${A:-B}), so the SHA
+// fallback must be computed by the script's shell before the execute line.
+func TestTemplate_TriggerSHAComputedInScript(t *testing.T) {
+	_, doc := loadTemplate(t)
+	job := doc[triggerJob]
+	if vars, ok := job["variables"].(map[string]any); ok {
+		for k, v := range vars {
+			if strings.Contains(fmt.Sprint(v), ":-") {
+				t.Errorf("variables.%s uses a shell default, which GitLab does not expand: %v", k, v)
+			}
+		}
+	}
+	const assign = `TF_REVIEW_SHA="${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}"`
+	assignAt, execAt := -1, -1
+	for i, l := range scriptLines(t, job) {
+		if strings.TrimSpace(l) == assign {
+			assignAt = i
+		}
+		if strings.Contains(l, "gcloud run jobs execute") {
+			execAt = i
+		}
+	}
+	if assignAt < 0 || execAt < 0 || assignAt > execAt {
+		t.Errorf("script must assign %s before the execute line (assign %d, execute %d)", assign, assignAt, execAt)
 	}
 }
 
