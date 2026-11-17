@@ -22,7 +22,21 @@ EOF
 cloudshell edit ~/tf-review.env
 ```
 
-에디터에서 `CHANGE_ME`를 실제 값으로 바꾸고 저장한다. GitLab 숫자 ID는 프로젝트 화면 오른쪽 위 메뉴(⋮)의 "Copy project ID"와 그룹 화면에서 확인한다.
+에디터에서 `CHANGE_ME`를 실제 값으로 바꾸고 저장한다. GitLab 숫자 ID 두 개는 **에이전트가 리뷰할 Terraform 저장소** 기준이다(Google Cloud project 번호가 아니다).
+
+| 값 | 의미 | 확인 위치 |
+| --- | --- | --- |
+| `GL_PID` | 대상 Terraform 저장소(GitLab 프로젝트)의 숫자 ID | 저장소 첫 화면 오른쪽 위 ⋮ → "Copy project ID" |
+| `GL_NSID` | 그 저장소를 **바로 담고 있는** 그룹(서브그룹)의 숫자 ID | 경로 `a/b/repo`라면 `b` 그룹 화면의 ⋮ → "Copy group ID" |
+
+헷갈리면 아래로 두 값을 한 번에 출력한다. `GROUP/SUBGROUP/PROJECT`는 브라우저 주소창의 저장소 경로로 바꾼다.
+
+```bash
+read -rsp "GitLab token: " T; echo
+curl -s -H "PRIVATE-TOKEN: $T" "https://gitlab.com/api/v4/projects/$(printf '%s' 'GROUP/SUBGROUP/PROJECT' | sed 's|/|%2F|g')" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);print('GL_PID =',d['id']);print('GL_NSID =',d['namespace']['id'],'(',d['namespace']['full_path'],')')"
+unset T
+```
 
 ## 1. config.json에 실제 값 넣기
 
