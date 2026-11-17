@@ -1,0 +1,110 @@
+# tf-review GitLab CI 템플릿. 대상 Terraform 저장소가 `include:`로 가져다 쓴다.
+#
+# 구성
+#   1. tf-review-staticcheck: fmt, validate, tflint, trivy를 실행하고 결과를
+#      tf-review-staticcheck.json(스키마 v1) artifact로 남긴다.
+#   2. tf-review-trigger: GitLab ID token으로 WIF 인증 후 Cloud Run Job을 실행한다.
+#      override는 --args의 MR iid, head SHA, pipeline ID 세 값뿐이다(env, task 수,
+#      timeout override는 쓰지 않는다).
+#
+# 필요한 CI/CD 변수(대상 저장소 또는 그룹의 설정에서 정의, 템플릿은 기본값을 두지 않는다)
+#   TF_REVIEW_PROJECT       에이전트가 속한 Google Cloud project ID
+#   TF_REVIEW_REGION        Cloud Run Job 리전
+#   TF_REVIEW_JOB           Cloud Run Job 이름
+#   TF_REVIEW_WIF_PROVIDER  WIF provider 리소스 경로(스킴 없이):
+#                           projects/<NUM>/locations/global/workloadIdentityPools/<POOL>/providers/<PROVIDER>
+#                           ID token의 aud는 이 값 앞에 https://iam.googleapis.com/ 를 붙여 만든다.
+#   TF_REVIEW_TRIGGER_SA    job 실행 권한만 가진 트리거 SA 이메일
+#
+# 전제
+#   - 기본 stage(test, deploy)를 쓴다. 대상 저장소가 stages를 재정의하면 두 stage를 포함해야 한다.
+#   - 두 job 모두 MR pipeline(merge_request_event)에서만 만든다. 대상 저장소의 workflow:rules가
+#     MR pipeline을 막고 있으면 두 job이 생성되지 않는다.
+#   - fork MR은 범위 밖이다. fork pipeline은 project_id claim이 달라 WIF attribute condition이
+#     거부한다. job 쪽에서도 허용 project ID를 이미지 설정으로 다시 확인한다.
+#   - 정적 검사 job은 도구 결과(실패 포함)로 pipeline을 실패시키지 않는다. 스크립트는 artifact를
+#     쓴 뒤 항상 exit 0 하며, 설치나 JSON 생성 자체가 실패할 때를 위해 allow_failure: true도
+#     둔다. 이렇게 해야 needs로 이어진 트리거 job이 건너뛰어지지 않고, 결과는 MR 코멘트에서 본다.
+#   - 도구는 linux/amd64 바이너리를 받는다(amd64 러너 전제).
+
+tf-review-staticcheck:
+  stage: test
+  image:
+    name: hashicorp/terraform:1.17.2@sha256:6e9c1e647c31a960dc9b59e13272f9111d90010c10b717f77ffb324767660475
+    entrypoint: [""]
+  variables:
+    TFLINT_VERSION: "0.66.0"
+    TFLINT_SHA256: "22be11cadc25cd02401e94c0ccc91aa63467debb8485c2a755d98f4c0a9d1e2e"
+    TRIVY_VERSION: "0.76.2"
+    TRIVY_SHA256: "bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf"
+    TF_REVIEW_OUT_DIR: "/tmp/tf-review-out"
+  allow_failure: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - apk add --no-cache jq
+    - mkdir -p "$TF_REVIEW_OUT_DIR" /tmp/tools /tmp/bin
+    - wget -q -O /tmp/tools/tflint.zip "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip"
+    - echo "${TFLINT_SHA256}  /tmp/tools/tflint.zip" | sha256sum -c -
+    - unzip -q -o /tmp/tools/tflint.zip -d /tmp/bin
+    - wget -q -O /tmp/tools/trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+    - echo "${TRIVY_SHA256}  /tmp/tools/trivy.tar.gz" | sha256sum -c -
+    - tar -xzf /tmp/tools/trivy.tar.gz -C /tmp/bin trivy
+    - export PATH="/tmp/bin:$PATH"
+    # 한 도구의 실패가 다른 도구를 막지 않도록 종료 코드는 파일에 기록하고 항상 0을 반환한다.
+    - |
+      run_tool() {
+        tool="$1"; shift
+        rc=0
+        "$@" > "$TF_REVIEW_OUT_DIR/$tool.txt" 2>&1 || rc=$?
+        echo "$rc" > "$TF_REVIEW_OUT_DIR/$tool.rc"
+      }
+    - run_tool fmt terraform fmt -check -recursive -no-color
+    - run_tool validate sh -c 'terraform init -backend=false -input=false -no-color && terraform validate -no-color'
+    - run_tool tflint tflint --recursive --no-color
+    - run_tool trivy trivy config --exit-code 1 .
+    # 스키마 v1: passed는 종료 코드 0, summary는 출력 앞 2000자(파서가 다시 자른다).
+    - |
+      entry() {
+        head -c 2000 "$TF_REVIEW_OUT_DIR/$1.txt" > "$TF_REVIEW_OUT_DIR/$1.summary"
+        jq -n --arg tool "$1" \
+          --argjson rc "$(cat "$TF_REVIEW_OUT_DIR/$1.rc")" \
+          --rawfile summary "$TF_REVIEW_OUT_DIR/$1.summary" \
+          '{tool: $tool, passed: ($rc == 0), summary: $summary}'
+      }
+    - |
+      jq -n --argjson fmt "$(entry fmt)" --argjson validate "$(entry validate)" \
+        --argjson tflint "$(entry tflint)" --argjson trivy "$(entry trivy)" \
+        '{version: 1, results: [$fmt, $validate, $tflint, $trivy]}' > tf-review-staticcheck.json
+  artifacts:
+    paths:
+      - tf-review-staticcheck.json
+    when: always
+    expire_in: 1 day
+
+tf-review-trigger:
+  stage: deploy
+  image: google/cloud-sdk:593.0.0-slim@sha256:e8394c66f4f66336af311343ff9a84c84521f8c1113ebc8abfe98bab9a155099
+  needs: [tf-review-staticcheck]
+  allow_failure: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  id_tokens:
+    GCP_ID_TOKEN:
+      aud: "https://iam.googleapis.com/${TF_REVIEW_WIF_PROVIDER}"
+  variables:
+    # PROVISIONAL (Phase 0 B): merged-results pipelines use a merge commit in CI_COMMIT_SHA
+    TF_REVIEW_SHA: "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}"
+  script:
+    - |
+      : "${TF_REVIEW_PROJECT:?}" "${TF_REVIEW_REGION:?}" "${TF_REVIEW_JOB:?}"
+      : "${TF_REVIEW_WIF_PROVIDER:?}" "${TF_REVIEW_TRIGGER_SA:?}"
+    - printf '%s' "$GCP_ID_TOKEN" > /tmp/gitlab-id-token
+    - >
+      gcloud iam workload-identity-pools create-cred-config
+      "//iam.googleapis.com/${TF_REVIEW_WIF_PROVIDER}"
+      --service-account="$TF_REVIEW_TRIGGER_SA"
+      --credential-source-file=/tmp/gitlab-id-token
+      --output-file=/tmp/wif-cred.json
+    - gcloud auth login --cred-file=/tmp/wif-cred.json --quiet
+    - gcloud run jobs execute "$TF_REVIEW_JOB" --project "$TF_REVIEW_PROJECT" --region "$TF_REVIEW_REGION" --async --args="--mr-iid=${CI_MERGE_REQUEST_IID},--sha=${TF_REVIEW_SHA},--pipeline-id=${CI_PIPELINE_ID}"
