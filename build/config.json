@@ -1,0 +1,35 @@
+{
+  "allowedGitlabProjectID": 12345678,
+  "gitlabBaseURL": "https://gitlab.com",
+  "tfeAddress": "https://app.terraform.io",
+  "tfeOrganization": "example-org",
+  "workspaces": ["example-nonprod"],
+  "mcpBinaryPath": "/app/terraform-mcp-server",
+  "mcpToolAllowlist": {
+    "searchProviderDocs": "search_provider_docs",
+    "getProviderDetails": "get_provider_details",
+    "getLatestProviderVersion": "get_latest_provider_version",
+    "getRunDetails": "get_run_details",
+    "getPlanJSONOutput": "get_plan_json_output",
+    "getPlanLogs": "get_plan_logs",
+    "whoami": "whoami",
+    "getTokenPermissions": "get_token_permissions"
+  },
+  "model": "gemini-3.8-flash",
+  "vertexProject": "example-project",
+  "vertexLocation": "us-central1",
+  "limits": {
+    "diffBytes": 200000,
+    "docsBytes": 60000,
+    "planSummaryBytes": 40000,
+    "llmOutputBytes": 8000
+  },
+  "waits": {
+    "initial": "10m",
+    "total": "30m"
+  },
+  "tokenFiles": {
+    "gitlab": "/secrets/gitlab/token",
+    "tfe": "/secrets/tfe/token"
+  }
+}
