@@ -41,6 +41,39 @@ func TestParseProviderDecls_ErrorNamesFile(t *testing.T) {
 	}
 }
 
+func TestParseProviderDecls_ConfigurationAliasesKeepSource(t *testing.T) {
+	d, err := ParseProviderDecls(map[string][]byte{"aliases.tf": fixture(t, "aliases.tf")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Sources["google"] != "acme-corp/google" || d.Constraints["google"] != "~> 6.0" {
+		t.Fatalf("got source %q constraint %q", d.Sources["google"], d.Constraints["google"])
+	}
+	ns, name := ProviderFor(ResourceChange{Type: "google_compute_instance"}, "google.west", d)
+	if ns != "acme-corp" || name != "google" {
+		t.Fatalf("got %s/%s", ns, name)
+	}
+}
+
+func TestIsPublicRegistry(t *testing.T) {
+	d, err := ParseProviderDecls(map[string][]byte{"aliases.tf": fixture(t, "aliases.tf")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		local string
+		want  bool
+	}{
+		{"loc", false}, {"ex", false}, {"pub", true}, {"hc", true},
+	}
+	for _, tt := range tests {
+		ns, _ := ProviderFor(ResourceChange{Type: "x_y"}, tt.local, d)
+		if got := IsPublicRegistry(ns); got != tt.want {
+			t.Errorf("%s: namespace %q public=%v, want %v", tt.local, ns, got, tt.want)
+		}
+	}
+}
+
 func TestProviderFor(t *testing.T) {
 	d := decls(t)
 	tests := []struct {

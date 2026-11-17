@@ -47,41 +47,48 @@ func ParseProviderDecls(files map[string][]byte) (ProviderDecls, error) {
 
 func addDecls(decls *ProviderDecls, body *hclsyntax.Body) {
 	for local, attr := range body.Attributes {
-		v, diags := attr.Expr.Value(nil)
-		if diags.HasErrors() || v.IsNull() || !v.IsKnown() {
+		if obj, ok := attr.Expr.(*hclsyntax.ObjectConsExpr); ok {
+			addObjectDecl(decls, local, obj)
+		} else if s := literalString(attr.Expr); s != "" {
+			decls.Constraints[local] = s
+		}
+	}
+}
+
+// addObjectDecl evaluates only the source and version keys, so other keys
+// (e.g. configuration_aliases traversals) cannot invalidate the declaration.
+func addObjectDecl(decls *ProviderDecls, local string, obj *hclsyntax.ObjectConsExpr) {
+	for _, item := range obj.Items {
+		key, diags := item.KeyExpr.Value(nil)
+		if diags.HasErrors() || key.IsNull() || key.Type() != cty.String {
 			continue
 		}
-		switch {
-		case v.Type() == cty.String:
-			decls.Constraints[local] = v.AsString()
-		case v.Type().IsObjectType():
-			if s := objectString(v, "source"); s != "" {
+		switch key.AsString() {
+		case "source":
+			if s := literalString(item.ValueExpr); s != "" {
 				decls.Sources[local] = strings.TrimPrefix(s, publicRegistryHost)
 			}
-			if s := objectString(v, "version"); s != "" {
+		case "version":
+			if s := literalString(item.ValueExpr); s != "" {
 				decls.Constraints[local] = s
 			}
 		}
 	}
 }
 
-func objectString(obj cty.Value, key string) string {
-	if !obj.Type().HasAttribute(key) {
-		return ""
-	}
-	v := obj.GetAttr(key)
-	if v.IsNull() || !v.IsKnown() || v.Type() != cty.String {
-		return ""
-	}
-	return v.AsString()
+// IsPublicRegistry reports whether a namespace returned by ProviderFor belongs
+// to the public registry. Registry namespaces cannot contain "/", so a "/"
+// means the source carried a non-public host.
+func IsPublicRegistry(namespace string) bool {
+	return !strings.Contains(namespace, "/")
 }
 
 // ProviderFor maps a resource to its provider's registry namespace and name.
 // The local name is providerMetaArg without any alias suffix, else the
 // resource type prefix up to the first "_". A declared source wins; otherwise
 // the namespace defaults to "hashicorp". For a non-public host source the
-// namespace contains the host ("host/namespace"), so a "." in it marks a
-// provider the caller should skip.
+// namespace contains the host ("host/namespace"); callers must use
+// IsPublicRegistry to decide whether to skip it.
 func ProviderFor(rc ResourceChange, providerMetaArg string, decls ProviderDecls) (namespace, name string) {
 	local, _, _ := strings.Cut(providerMetaArg, ".")
 	if local == "" {

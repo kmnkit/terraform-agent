@@ -204,7 +204,7 @@ func providerMeta(body *hclsyntax.Body) string {
 func moduleCall(path string, b *hclsyntax.Block) ModuleCall {
 	return ModuleCall{
 		File: path, Name: b.Labels[0],
-		Source:  stringLiteral(b.Body, "source"),
+		Source:  stripUserinfo(stringLiteral(b.Body, "source")),
 		Version: stringLiteral(b.Body, "version"),
 	}
 }
@@ -216,11 +216,27 @@ func stringLiteral(body *hclsyntax.Body, name string) string {
 	if !ok {
 		return ""
 	}
-	v, diags := attr.Expr.Value(nil)
+	return literalString(attr.Expr)
+}
+
+func literalString(expr hclsyntax.Expression) string {
+	v, diags := expr.Value(nil)
 	if diags.HasErrors() || v.IsNull() || !v.IsKnown() || v.Type() != cty.String {
 		return ""
 	}
 	return v.AsString()
+}
+
+var (
+	urlUserinfo = regexp.MustCompile(`://[^/@\s]*@`)
+	scpUserinfo = regexp.MustCompile(`^(git::)?[^/@:\s]+@`)
+)
+
+// stripUserinfo removes credentials/usernames from a module source because it
+// is forwarded to the LLM.
+func stripUserinfo(src string) string {
+	src = urlUserinfo.ReplaceAllString(src, "://")
+	return scpUserinfo.ReplaceAllString(src, "$1")
 }
 
 // parseHCL parses src; errors name the file and diagnostic lines but never
