@@ -50,25 +50,41 @@ type reviewItem struct {
 // RunCode reviews the MR's Terraform changes and upserts the code review note.
 // An MR without .tf changes gets no note and no LLM call. If nothing was
 // detected only because GitLab collapsed .tf diffs, a truncation-only note is
-// posted without an LLM call.
+// posted without an LLM call. Static checks are read before the scan, so the
+// analysis-failed note posted on any later error (spec §5) still shows them.
 func RunCode(ctx context.Context, d Deps, in input.Input) error {
 	ds, err := fetchDiffs(ctx, d, in.MRIID)
 	if err != nil {
-		return err
+		return failCode(ctx, d, in, nil, err)
+	}
+	if len(ds.excerpts) == 0 && ds.collapsed == 0 {
+		d.Log.Info("review: no terraform file changes; nothing to post")
+		return nil
+	}
+	checks, err := staticChecks(ctx, d, in.PipelineID)
+	if err != nil {
+		return failCode(ctx, d, in, nil, err)
 	}
 	head := headReader{gl: d.GitLab, sha: in.SHA}
 	changes, err := hclscan.ChangedResources(ctx, ds.raw, head)
 	if err != nil {
-		return fmt.Errorf("review: scan changes: %w", err)
+		return failCode(ctx, d, in, checks, fmt.Errorf("review: scan changes: %w", err))
 	}
 	if len(changes.Resources) == 0 && len(changes.Modules) == 0 {
-		return handleNoChanges(ctx, d, in, ds)
+		return handleNoChanges(ctx, d, in, ds, checks)
 	}
 	d.Log.Info("review: changes detected", "resources", len(changes.Resources), "modules", len(changes.Modules))
-	view, rin, docs, err := prepare(ctx, d, in, head, ds, changes)
+	view, rin, docs, err := prepare(ctx, d, in, head, ds, changes, checks)
 	if err != nil {
-		return err
+		return failCode(ctx, d, in, checks, err)
 	}
+	return reviewAndPublish(ctx, d, in, view, rin, docs)
+}
+
+// reviewAndPublish asks the LLM for findings and posts the note, or the
+// analysis-failed variant when the LLM fails.
+func reviewAndPublish(ctx context.Context, d Deps, in input.Input, view render.CodeReviewView,
+	rin llm.ReviewInput, docs map[string]tfdocs.Excerpt) error {
 	findings, llmErr := d.Narrator.ReviewFindings(ctx, rin)
 	if llmErr != nil {
 		return publishAnalysisFailed(ctx, d, in, view, llmErr)
@@ -79,28 +95,20 @@ func RunCode(ctx context.Context, d Deps, in input.Input) error {
 
 // handleNoChanges posts nothing when no .tf diff was collapsed; otherwise it
 // posts the truncation notice with static checks and no findings.
-func handleNoChanges(ctx context.Context, d Deps, in input.Input, ds diffSet) error {
+func handleNoChanges(ctx context.Context, d Deps, in input.Input, ds diffSet, checks []model.CheckResult) error {
 	if ds.collapsed == 0 {
 		d.Log.Info("review: no terraform resource or module changes; nothing to post")
 		return nil
 	}
 	d.Log.Info("review: only collapsed .tf diffs; posting truncation notice", "collapsedTfDiffs", ds.collapsed)
-	checks, err := staticChecks(ctx, d, in.PipelineID)
-	if err != nil {
-		return err
-	}
 	view := render.CodeReviewView{SHA: in.SHA, Checks: checks, Truncated: true, VersionBasis: string(tfdocs.BasisNone)}
 	return publishBody(ctx, d, in, view)
 }
 
-// prepare reads static checks first (no MCP traffic is spent if that fails),
-// then docs, and builds the view and LLM input.
+// prepare reads the provider declarations and docs and builds the view and
+// LLM input.
 func prepare(ctx context.Context, d Deps, in input.Input, head hclscan.FileReader, ds diffSet,
-	changes hclscan.Changes) (render.CodeReviewView, llm.ReviewInput, map[string]tfdocs.Excerpt, error) {
-	checks, err := staticChecks(ctx, d, in.PipelineID)
-	if err != nil {
-		return render.CodeReviewView{}, llm.ReviewInput{}, nil, err
-	}
+	changes hclscan.Changes, checks []model.CheckResult) (render.CodeReviewView, llm.ReviewInput, map[string]tfdocs.Excerpt, error) {
 	decls, err := providerDecls(ctx, head, ds.raw)
 	if err != nil {
 		return render.CodeReviewView{}, llm.ReviewInput{}, nil, err
@@ -407,10 +415,7 @@ func withDocRefs(findings []model.Finding, docs map[string]tfdocs.Excerpt) []mod
 func publishAnalysisFailed(ctx context.Context, d Deps, in input.Input, view render.CodeReviewView, llmErr error) error {
 	view.AnalysisFailed = true
 	wrapped := fmt.Errorf("review: review findings: %w", llmErr)
-	if err := publishBody(ctx, d, in, view); err != nil {
-		return errors.Join(wrapped, err)
-	}
-	return wrapped
+	return withNotice(ctx, wrapped, func(nctx context.Context) error { return publishBody(nctx, d, in, view) })
 }
 
 // publishBody upserts the rendered note. A stale head is not an error: a

@@ -40,7 +40,7 @@ const testToken = "tfe-token-sentinel"
 func testConfig(extra map[string]string) config.Config {
 	allow := map[string]string{
 		"echoEnv": "echo_env", "noisy": "noisy", "limited": "rate_limited",
-		"fail": "fail", "big": "big",
+		"fail": "fail", "big": "big", "hang": "hang",
 	}
 	for k, v := range extra {
 		allow[k] = v
@@ -297,6 +297,22 @@ func TestCall_RateLimitHonoursContext(t *testing.T) {
 		map[string]any{"failures": 99, "phrase": "rate limit exceeded: too many requests globally"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestCall_PerCallTimeout(t *testing.T) {
+	if callTimeout != 60*time.Second {
+		t.Fatalf("callTimeout = %v, want 60s", callTimeout)
+	}
+	c := startClient(t, testConfig(nil))
+	c.callTimeout = 200 * time.Millisecond
+	start := time.Now()
+	_, err := c.Call(context.Background(), "hang", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("call took %v, want it bounded by the per-call timeout", elapsed)
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -17,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/terraform-agent/internal/config"
@@ -122,10 +124,41 @@ const (
 	testProject = 4242
 )
 
+// noteServer is a stateful fake of the GitLab notes endpoints.
+type noteServer struct {
+	mu     sync.Mutex
+	bodies []string
+}
+
+func (n *noteServer) handle(w http.ResponseWriter, r *http.Request) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if r.Method == http.MethodPost {
+		var req struct {
+			Body string `json:"body"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		n.bodies = append(n.bodies, req.Body)
+		fmt.Fprint(w, noteJSON(len(n.bodies), req.Body))
+		return
+	}
+	parts := make([]string, len(n.bodies))
+	for i, b := range n.bodies {
+		parts[i] = noteJSON(i+1, b)
+	}
+	fmt.Fprint(w, "["+strings.Join(parts, ",")+"]")
+}
+
+func noteJSON(id int, body string) string {
+	b, _ := json.Marshal(body)
+	return fmt.Sprintf(`{"id":%d,"body":%s,"author":{"id":1}}`, id, b)
+}
+
 // executeWith runs execute against a fake GitLab serving mrJSON and a
 // pipeline list containing pipeline 900 at testSHA. The MCP binary does not
-// exist, so any error mentioning tfmcp proves tfmcp.Start was reached.
-func executeWith(t *testing.T, mrJSON string) error {
+// exist, so any error mentioning tfmcp proves tfmcp.Start was reached. It
+// returns the bodies of the notes posted.
+func executeWith(t *testing.T, mrJSON string) ([]string, error) {
 	t.Helper()
 	mux := http.NewServeMux()
 	base := fmt.Sprintf("/api/v4/projects/%d/merge_requests/7", testProject)
@@ -133,6 +166,9 @@ func executeWith(t *testing.T, mrJSON string) error {
 	mux.HandleFunc(base+"/pipelines", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, `[{"id":900,"sha":%q}]`, testSHA)
 	})
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, `{"id":1}`) })
+	notes := &noteServer{}
+	mux.HandleFunc(base+"/notes", notes.handle)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	tok := filepath.Join(t.TempDir(), "token")
@@ -143,9 +179,13 @@ func executeWith(t *testing.T, mrJSON string) error {
 		AllowedGitlabProjectID: testProject, GitlabBaseURL: srv.URL, TfeAddress: config.TfeAddress,
 		McpBinaryPath: filepath.Join(t.TempDir(), "no-such-mcp"),
 		TokenFiles:    config.TokenFiles{TFE: tok, GitLab: tok},
+		Workspaces:    []string{"ws-a"},
 	}
 	j := job{in: input.Input{MRIID: 7, SHA: testSHA, PipelineID: 900}, cfg: cfg}
-	return execute(context.Background(), j, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	err := execute(context.Background(), j, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	notes.mu.Lock()
+	defer notes.mu.Unlock()
+	return notes.bodies, err
 }
 
 func mrJSON(sha string, source int) string {
@@ -153,16 +193,33 @@ func mrJSON(sha string, source int) string {
 }
 
 func TestExecute_PreflightRunsBeforeMCPStart(t *testing.T) {
-	if err := executeWith(t, mrJSON(strings.Repeat("f", 40), testProject)); err != nil {
-		t.Errorf("stale MR: err = %v, want nil without starting MCP", err)
+	if notes, err := executeWith(t, mrJSON(strings.Repeat("f", 40), testProject)); err != nil || len(notes) != 0 {
+		t.Errorf("stale MR: err = %v, notes = %d; want nil without starting MCP or posting", err, len(notes))
 	}
-	err := executeWith(t, mrJSON(testSHA, 999))
-	if err == nil || strings.Contains(err.Error(), "tfmcp") {
-		t.Errorf("fork MR: err = %v, want preflight error before MCP start", err)
+	notes, err := executeWith(t, mrJSON(testSHA, 999))
+	if err == nil || strings.Contains(err.Error(), "tfmcp") || len(notes) != 0 {
+		t.Errorf("fork MR: err = %v, notes = %d; want preflight error before MCP start, no notes", err, len(notes))
 	}
 	// Control: a valid MR reaches tfmcp.Start, which fails on the missing binary.
-	if err := executeWith(t, mrJSON(testSHA, testProject)); err == nil || !strings.Contains(err.Error(), "tfmcp") {
+	if _, err := executeWith(t, mrJSON(testSHA, testProject)); err == nil || !strings.Contains(err.Error(), "tfmcp") {
 		t.Errorf("valid MR: err = %v, want tfmcp start error", err)
+	}
+}
+
+// A start failure after Preflight replaces the notes with analysis-failed
+// notices (code and every workspace), without the error text.
+func TestExecute_StartFailurePostsAnalysisFailedNotes(t *testing.T) {
+	notes, err := executeWith(t, mrJSON(testSHA, testProject))
+	if err == nil {
+		t.Fatal("want tfmcp start error")
+	}
+	if len(notes) != 2 {
+		t.Fatalf("notes = %d, want code + plan", len(notes))
+	}
+	for _, b := range notes {
+		if !strings.Contains(b, "분석 실패") || strings.Contains(b, "no-such-mcp") || strings.Contains(b, "tfmcp") {
+			t.Errorf("unexpected note body:\n%s", b)
+		}
 	}
 }
 

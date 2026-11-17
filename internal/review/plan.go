@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"slices"
+	"time"
 
 	"github.com/terraform-agent/internal/config"
 	"github.com/terraform-agent/internal/gitlab"
@@ -28,6 +28,10 @@ const (
 	// PROVISIONAL (Phase 0 B): the input schema needs a token to inspect.
 	planIDParam = "plan_id"
 	planKind    = "plan"
+	// postWaitReserve is kept between the end of a plan wait and the process
+	// deadline for the plan JSON or log call (MCP calls time out after 60s),
+	// one LLM call (3m client timeout) and publishing.
+	postWaitReserve = 5 * time.Minute
 )
 
 // noErrorBlocksNotice is posted for a failed plan whose log has no error block.
@@ -49,17 +53,16 @@ func (s statusSource) CommitStatuses(ctx context.Context) ([]gitlab.CommitStatus
 
 // RunPlan analyzes the HCP Terraform plan of every configured workspace, in
 // sorted order, and upserts one plan note per workspace. A failing workspace
-// does not stop the others; their errors are joined. Raw plan JSON, logs and
-// MCP responses are never logged, returned in errors or posted.
+// does not stop the others; their errors are joined. Any failing stage posts
+// the analysis-failed note for its workspace (spec §5). Raw plan JSON, logs
+// and MCP responses are never logged, returned in errors or posted.
 func RunPlan(ctx context.Context, d Deps, in input.Input) error {
 	u, err := url.Parse(d.Config.TfeAddress)
 	if err != nil || u.Host == "" {
 		return errors.New("review: tfeAddress has no host")
 	}
-	workspaces := slices.Clone(d.Config.Workspaces)
-	slices.Sort(workspaces)
 	var errs []error
-	for _, ws := range workspaces {
+	for _, ws := range sortedWorkspaces(d) {
 		if err := planWorkspace(ctx, d, in, u.Host, ws); err != nil {
 			errs = append(errs, err)
 		}
@@ -68,14 +71,18 @@ func RunPlan(ctx context.Context, d Deps, in input.Input) error {
 }
 
 func planWorkspace(ctx context.Context, d Deps, in input.Input, host, ws string) error {
+	waits, ok := waitBudget(ctx, d.Config.Waits)
+	if !ok {
+		return failPlan(ctx, d, in, ws, fmt.Errorf("review: no time left to wait for the plan of workspace %s", ws))
+	}
 	src := plan.Source{Host: host, Org: d.Config.TfeOrganization, Workspaces: []string{ws}, WantSHA: in.SHA}
-	st, err := plan.Wait(ctx, statusSource{gl: d.GitLab, sha: in.SHA}, d.MCP, src, d.Config.Waits, d.Clock)
+	st, err := plan.Wait(ctx, statusSource{gl: d.GitLab, sha: in.SHA}, d.MCP, src, waits, d.Clock)
 	if err != nil {
 		return handleWaitError(ctx, d, in, ws, st, err)
 	}
 	d.Log.Info("review: plan run settled", "workspace", ws, "run", st.Ref.RunID, "phase", string(st.Phase))
 	if st.PlanID == "" {
-		return fmt.Errorf("review: plan run of workspace %s has no plan ID", ws)
+		return failPlan(ctx, d, in, ws, fmt.Errorf("review: plan run of workspace %s has no plan ID", ws))
 	}
 	view := render.PlanView{Workspace: ws, RunURL: runURL(d.Config.TfeOrganization, ws, st.Ref.RunID), SHA: in.SHA}
 	if st.Phase == plan.PhaseFailed {
@@ -84,26 +91,53 @@ func planWorkspace(ctx context.Context, d Deps, in input.Input, host, ws string)
 	return analyzeChanges(ctx, d, in, st.PlanID, view)
 }
 
-// handleWaitError posts the no-plan and timeout notices, posts the unverified
+// waitBudget bounds the plan wait by the process deadline: Total becomes at
+// most the time left minus postWaitReserve, and Initial at most Total. It
+// reports false when no time is left to wait at all.
+func waitBudget(ctx context.Context, w config.Waits) (config.Waits, bool) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return w, true
+	}
+	left := time.Until(deadline) - postWaitReserve
+	if left <= 0 {
+		return config.Waits{}, false
+	}
+	total := min(w.Total, left)
+	return config.Waits{Initial: min(w.Initial, total), Total: total}, true
+}
+
+// handleWaitError posts the no-plan and timeout notices, and the unverified
 // notice for a run of another commit (it may be a forged status, so the stale
-// note must not survive; ruling R24), and records every other error
-// (including a workspace or org mismatch) without posting.
+// note must not survive; ruling R24) or for HCP statuses that could not be
+// recognized (ruling R31). Every other error, including a workspace or org
+// mismatch, posts the analysis-failed note.
 func handleWaitError(ctx context.Context, d Deps, in input.Input, ws string, st plan.RunState, err error) error {
 	switch {
 	case errors.Is(err, plan.ErrNoPlan):
 		d.Log.Info("review: no plan run found for commit", "workspace", ws)
-		return publishPlan(ctx, d, in, render.PlanView{Workspace: ws, SHA: in.SHA, Status: render.PlanNoPlan})
+		return postPlan(ctx, d, in, render.PlanView{Workspace: ws, SHA: in.SHA, Status: render.PlanNoPlan})
 	case errors.Is(err, plan.ErrTimeout):
 		d.Log.Info("review: plan run did not finish in time", "workspace", ws, "run", st.Ref.RunID, "phase", string(st.Phase))
-		return publishPlan(ctx, d, in, render.PlanView{
+		return postPlan(ctx, d, in, render.PlanView{
 			Workspace: ws, RunURL: runURL(d.Config.TfeOrganization, ws, st.Ref.RunID), SHA: in.SHA,
 			Status: render.PlanTimeout, Queued: st.Phase == plan.PhaseQueued,
 		})
 	case errors.Is(err, plan.ErrSHAMismatch):
 		d.Log.Warn("review: plan run is for another commit; posting unverified notice", "workspace", ws)
 		return publishUnverified(ctx, d, in, ws, err)
+	case errors.Is(err, plan.ErrUnrecognizedStatus):
+		// The error text carries only the count of such statuses.
+		d.Log.Warn("review: HCP status not recognized; posting unverified notice", "workspace", ws, "err", err)
+		return publishUnverified(ctx, d, in, ws, err)
 	}
-	return fmt.Errorf("review: wait for plan run of workspace %s: %w", ws, err)
+	return failPlan(ctx, d, in, ws, fmt.Errorf("review: wait for plan run of workspace %s: %w", ws, err))
+}
+
+// postPlan posts a notice that is not an error (no plan, timeout) on the
+// detached notice context: the wait may have used up most of the run's time.
+func postPlan(ctx context.Context, d Deps, in input.Input, view render.PlanView) error {
+	return withNotice(ctx, nil, func(nctx context.Context) error { return publishPlan(nctx, d, in, view) })
 }
 
 // publishUnverified posts the unverified notice (no RunURL, no summary) and
@@ -111,10 +145,7 @@ func handleWaitError(ctx context.Context, d Deps, in input.Input, ws string, st 
 func publishUnverified(ctx context.Context, d Deps, in input.Input, ws string, bindErr error) error {
 	wrapped := fmt.Errorf("review: plan run of workspace %s not bound to commit: %w", ws, bindErr)
 	view := render.PlanView{Workspace: ws, SHA: in.SHA, Status: render.PlanUnverified}
-	if err := publishPlan(ctx, d, in, view); err != nil {
-		return errors.Join(wrapped, err)
-	}
-	return wrapped
+	return withNotice(ctx, wrapped, func(nctx context.Context) error { return publishPlan(nctx, d, in, view) })
 }
 
 // analyzeChanges aggregates the plan JSON into a value-free summary and asks
@@ -123,11 +154,11 @@ func publishUnverified(ctx context.Context, d Deps, in input.Input, ws string, b
 func analyzeChanges(ctx context.Context, d Deps, in input.Input, planID string, view render.PlanView) error {
 	raw, err := d.MCP.Call(ctx, plan.ToolGetPlanJSON, map[string]any{planIDParam: planID})
 	if err != nil {
-		return fmt.Errorf("review: get plan JSON of workspace %s: %w", view.Workspace, err)
+		return failPlan(ctx, d, in, view.Workspace, fmt.Errorf("review: get plan JSON of workspace %s: %w", view.Workspace, err))
 	}
 	sum, err := plan.Aggregate([]byte(raw), maxTargets)
 	if err != nil {
-		return fmt.Errorf("review: aggregate plan of workspace %s: %w", view.Workspace, err)
+		return failPlan(ctx, d, in, view.Workspace, fmt.Errorf("review: aggregate plan of workspace %s: %w", view.Workspace, err))
 	}
 	view.Summary = sum
 	risks, err := d.Narrator.PlanRisks(ctx, sum)
@@ -144,7 +175,7 @@ func analyzeChanges(ctx context.Context, d Deps, in input.Input, planID string, 
 func analyzeFailure(ctx context.Context, d Deps, in input.Input, planID string, view render.PlanView) error {
 	log, err := d.MCP.Call(ctx, plan.ToolGetPlanLogs, map[string]any{planIDParam: planID})
 	if err != nil {
-		return fmt.Errorf("review: get plan logs of workspace %s: %w", view.Workspace, err)
+		return failPlan(ctx, d, in, view.Workspace, fmt.Errorf("review: get plan logs of workspace %s: %w", view.Workspace, err))
 	}
 	blocks := plan.ExtractErrorBlocks(log, maxErrorBlockBytes)
 	view.Status = render.PlanFailed
@@ -172,10 +203,7 @@ func runURL(org, ws, runID string) string {
 // with any publish error).
 func publishFailureUnexplained(ctx context.Context, d Deps, in input.Input, view render.PlanView, llmErr error) error {
 	view.Failure = failureAnalysisFailedNotice
-	if err := publishPlan(ctx, d, in, view); err != nil {
-		return errors.Join(llmErr, err)
-	}
-	return llmErr
+	return withNotice(ctx, llmErr, func(nctx context.Context) error { return publishPlan(nctx, d, in, view) })
 }
 
 // publishPlanAnalysisFailed posts the analysis-failed variant (finished
@@ -183,10 +211,7 @@ func publishFailureUnexplained(ctx context.Context, d Deps, in input.Input, view
 func publishPlanAnalysisFailed(ctx context.Context, d Deps, in input.Input, view render.PlanView, llmErr error) error {
 	view.Status = render.PlanAnalysisFailed
 	view.Risks = nil
-	if err := publishPlan(ctx, d, in, view); err != nil {
-		return errors.Join(llmErr, err)
-	}
-	return llmErr
+	return withNotice(ctx, llmErr, func(nctx context.Context) error { return publishPlan(nctx, d, in, view) })
 }
 
 // publishPlan upserts the workspace's plan note. A stale head is not an

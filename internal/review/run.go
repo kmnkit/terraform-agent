@@ -35,7 +35,8 @@ func Preflight(ctx context.Context, d Deps, in input.Input) (bool, error) {
 }
 
 // Run runs Preflight, verifies the MCP tools, then runs the code review and
-// the plan analysis. Both flows always run; their errors are joined. Run
+// the plan analysis. Both flows always run; their errors are joined. A failed
+// tool check posts the analysis-failed notes (FailStartup). Run
 // repeats Preflight even when the caller already ran it, so it is safe on its
 // own and re-checks the MR head right before any work is published.
 func Run(ctx context.Context, d Deps, in input.Input) error {
@@ -44,7 +45,7 @@ func Run(ctx context.Context, d Deps, in input.Input) error {
 		return err
 	}
 	if err := d.Tools.VerifyTools(ctx); err != nil {
-		return fmt.Errorf("review: verify MCP tools: %w", err)
+		return FailStartup(ctx, d, in, fmt.Errorf("review: verify MCP tools: %w", err))
 	}
 	runDiagnostics(ctx, d)
 	codeErr := RunCode(ctx, d, in)

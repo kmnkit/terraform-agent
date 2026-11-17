@@ -86,6 +86,8 @@ func TestGoldenComments(t *testing.T) {
 
 	unverified := PlanView{Workspace: "prod", SHA: testSHA, Status: PlanUnverified}
 
+	planErr := PlanView{Workspace: "prod", SHA: testSHA, Status: PlanError}
+
 	tests := []struct {
 		name string
 		got  string
@@ -100,6 +102,7 @@ func TestGoldenComments(t *testing.T) {
 		{"plan_timeout_queued", Plan(timeoutQueued)},
 		{"plan_timeout_running", Plan(timeoutRunning)},
 		{"plan_unverified", Plan(unverified)},
+		{"plan_error", Plan(planErr)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) { assertGolden(t, tc.name, tc.got) })
@@ -122,12 +125,14 @@ func TestCommentsStartWithMarkerAndShortSHA(t *testing.T) {
 	}
 }
 
-func TestPlanUnverifiedNeverShowsRunURLOrSummary(t *testing.T) {
-	v := planView(PlanUnverified)
-	body := Plan(v)
-	for _, s := range []string{v.RunURL, "실행:", "변경 요약", v.Risks[0]} {
-		if strings.Contains(body, s) {
-			t.Errorf("unverified body contains %q:\n%s", s, body)
+func TestPlanUnverifiedAndErrorNeverShowRunURLOrSummary(t *testing.T) {
+	for _, status := range []PlanStatus{PlanUnverified, PlanError} {
+		v := planView(status)
+		body := Plan(v)
+		for _, s := range []string{v.RunURL, "실행:", "변경 요약", v.Risks[0]} {
+			if strings.Contains(body, s) {
+				t.Errorf("%s body contains %q:\n%s", status, s, body)
+			}
 		}
 	}
 }

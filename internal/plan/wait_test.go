@@ -367,3 +367,46 @@ func TestVerifyRunSHAWrapsMismatchSentinelOnly(t *testing.T) {
 		t.Errorf("missing sha err = %v", err)
 	}
 }
+
+func waitWithStatuses(t *testing.T, src Source, statuses []gitlab.CommitStatus) error {
+	t.Helper()
+	ss := &fakeStatuses{byCall: func(int) []gitlab.CommitStatus { return statuses }}
+	_, err := Wait(context.Background(), ss, &fakeCaller{}, src, testWaits, newClock())
+	return err
+}
+
+func TestWaitUnrecognizedHostStatus(t *testing.T) {
+	for name, s := range map[string]gitlab.CommitStatus{
+		"other path shape": {Name: "Terraform Cloud/acme/net-prod", TargetURL: "https://app.terraform.io/app/acme/net-prod/runs/run-GOOD1/details"},
+		"other org":        {TargetURL: "https://app.terraform.io/app/other/net-prod/runs/run-GOOD1"},
+		"bad run id":       {TargetURL: "https://app.terraform.io/app/acme/net-prod/runs/RUN_1"},
+		"name differs":     {Name: "HCP Terraform/acme/net-prod", TargetURL: "https://app.terraform.io/app/acme/net-prod/runs/run-GOOD1"},
+		"query string":     {TargetURL: "https://app.terraform.io/app/acme/net-prod/runs/run-GOOD1?x=1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := waitWithStatuses(t, testSource, []gitlab.CommitStatus{s})
+			if !errors.Is(err, ErrUnrecognizedStatus) {
+				t.Fatalf("err = %v, want ErrUnrecognizedStatus", err)
+			}
+			if strings.Contains(err.Error(), "run-") || strings.Contains(err.Error(), "acme") {
+				t.Fatalf("error leaks status content: %v", err)
+			}
+		})
+	}
+}
+
+func TestWaitNoPlanWhenHostStatusesAreAccountedFor(t *testing.T) {
+	src := testSource
+	src.Workspaces = []string{"net-dev"}
+	for name, s := range map[string]gitlab.CommitStatus{
+		"other workspace run": {Name: "Terraform Cloud/acme/net-prod", TargetURL: "https://app.terraform.io/app/acme/net-prod/runs/run-GOOD1"},
+		"other host":          {TargetURL: "https://ci.example.com/app/acme/net-dev/runs/run-GOOD1"},
+		"not a url":           {TargetURL: "::"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := waitWithStatuses(t, src, []gitlab.CommitStatus{s}); !errors.Is(err, ErrNoPlan) {
+				t.Fatalf("err = %v, want ErrNoPlan", err)
+			}
+		})
+	}
+}

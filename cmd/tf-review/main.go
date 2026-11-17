@@ -117,25 +117,26 @@ func readToken(path string) (string, error) {
 
 // execute runs review.Preflight (GitLab only) before starting the MCP child
 // process that holds the TFE token or creating ADC credentials, so a
-// disallowed, fork or stale job never spawns them.
+// disallowed, fork or stale job never spawns them. Once Preflight passed, a
+// failure to start either posts the analysis-failed notes.
 func execute(ctx context.Context, j job, log *slog.Logger) error {
 	cfg := j.cfg
 	gl, err := gitlab.NewClient(cfg.GitlabBaseURL, cfg.TokenFiles.GitLab, cfg.AllowedGitlabProjectID, httpx.NewClient(gitlabTimeout))
 	if err != nil {
 		return err
 	}
-	pre := review.Deps{GitLab: gl, Config: cfg, Log: log}
+	pre := review.Deps{GitLab: gl, Notes: gl, Config: cfg, Log: log}
 	if proceed, err := review.Preflight(ctx, pre, j.in); err != nil || !proceed {
 		return err
 	}
 	mcp, err := tfmcp.Start(ctx, cfg, cfg.TokenFiles.TFE)
 	if err != nil {
-		return err
+		return review.FailStartup(ctx, pre, j.in, err)
 	}
 	defer closeMCP(mcp, log)
 	narrator, err := llm.NewVertexNarrator(ctx, cfg, httpx.NewClient(llmTimeout))
 	if err != nil {
-		return err
+		return review.FailStartup(ctx, pre, j.in, err)
 	}
 	d := review.Deps{
 		GitLab: gl, Notes: gl, MCP: mcp, Tools: mcp, Narrator: narrator,

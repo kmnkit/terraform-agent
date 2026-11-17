@@ -11,6 +11,7 @@ import (
 	"github.com/terraform-agent/internal/gitlab"
 	"github.com/terraform-agent/internal/input"
 	"github.com/terraform-agent/internal/plan"
+	"github.com/terraform-agent/internal/render"
 	"github.com/terraform-agent/internal/tfmcp"
 )
 
@@ -234,9 +235,40 @@ func TestRun_VerifyToolsFailureFails(t *testing.T) {
 	if err := h.runAll(context.Background()); !errors.Is(err, verifyErr) {
 		t.Fatalf("err = %v, want wrapping %v", err, verifyErr)
 	}
-	if len(h.dm.diag) != 0 || h.rgl.diffCalls != 0 || h.store.calls != 0 {
-		t.Errorf("work after VerifyTools failure: diag=%v diffs=%d store=%d", h.dm.diag, h.rgl.diffCalls, h.store.calls)
+	if len(h.dm.diag) != 0 || h.rgl.diffCalls != 0 || len(h.pm.calls) != 0 {
+		t.Errorf("work after VerifyTools failure: diag=%v diffs=%d mcp=%d", h.dm.diag, h.rgl.diffCalls, len(h.pm.calls))
 	}
+	h.assertStartupFailureNotes(t)
+}
+
+// assertStartupFailureNotes checks the analysis-failed code note (with the
+// static checks) and plan note, and that no error text was posted.
+func (h *runHarness) assertStartupFailureNotes(t *testing.T) {
+	t.Helper()
+	if len(h.store.notes) != 2 {
+		t.Fatalf("notes = %d, want code + plan", len(h.store.notes))
+	}
+	assertPlanError(t, h.planHarness, "ws-a")
+	for _, n := range h.store.notes {
+		if render.HasMarker(n.Body, "code", "-") {
+			mustContain(t, n.Body, "> 분석 실패:", "| fmt | 통과 | ok |")
+		}
+		if strings.Contains(n.Body, "tools missing") || strings.Contains(n.Body, "deadline") {
+			t.Errorf("note carries error text:\n%s", n.Body)
+		}
+	}
+}
+
+func TestFailStartup_NeedsOnlyGitLabNotesConfigAndLog(t *testing.T) {
+	h := newRunHarness()
+	full := h.runDeps()
+	d := Deps{GitLab: h.rgl, Notes: h.store, Config: full.Config, Log: full.Log}
+	cause := errors.New("tfmcp: start MCP server failed")
+	in := input.Input{MRIID: 7, SHA: headSHA, PipelineID: runPipelineID}
+	if err := FailStartup(context.Background(), d, in, cause); !errors.Is(err, cause) {
+		t.Fatalf("err = %v, want wrapping %v", err, cause)
+	}
+	h.assertStartupFailureNotes(t)
 }
 
 func TestRun_DiagnosticFailureIsIgnoredAndNotLogged(t *testing.T) {
@@ -302,7 +334,9 @@ func TestRun_DeadlineCancelsRun(t *testing.T) {
 	if err := h.runAll(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want DeadlineExceeded", err)
 	}
-	if h.rgl.diffCalls != 0 || h.store.calls != 0 {
-		t.Errorf("work after deadline: diffs=%d store=%d", h.rgl.diffCalls, h.store.calls)
+	if h.rgl.diffCalls != 0 || len(h.pm.calls) != 0 {
+		t.Errorf("work after deadline: diffs=%d mcp=%d", h.rgl.diffCalls, len(h.pm.calls))
 	}
+	// The failure notes are still posted, on a detached context.
+	h.assertStartupFailureNotes(t)
 }

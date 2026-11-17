@@ -54,12 +54,22 @@ func statusNameMatches(name, org, ws string) bool {
 	return name == "" || name == "Terraform Cloud/"+org+"/"+ws
 }
 
-// parseRunURL accepts only the two URL forms below, matched exactly.
+// parseRunURL accepts only the two URL forms below, matched exactly, for one
+// of src.Workspaces.
 // PROVISIONAL (Phase 0 B): the real HCP status target_url shape is unverified.
 //
 //	https://<Host>/app/<Org>/<ws>/runs/<run-id>
 //	https://<Host>/app/<Org>/workspaces/<ws>/runs/<run-id>
 func parseRunURL(raw string, src Source) (workspace, runID string, ok bool) {
+	ws, id, ok := parseRunShape(raw, src)
+	if !ok || !slices.Contains(src.Workspaces, ws) {
+		return "", "", false
+	}
+	return ws, id, true
+}
+
+// parseRunShape is parseRunURL for any workspace name.
+func parseRunShape(raw string, src Source) (workspace, runID string, ok bool) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host != src.Host || u.User != nil {
 		return "", "", false
@@ -71,11 +81,27 @@ func parseRunURL(raw string, src Source) (workspace, runID string, ok bool) {
 	if len(seg) == 6 && seg[2] == "workspaces" {
 		seg = append(seg[:2:2], seg[3:]...)
 	}
-	if len(seg) != 5 || seg[0] != "app" || seg[1] != src.Org || seg[3] != "runs" {
-		return "", "", false
-	}
-	if !slices.Contains(src.Workspaces, seg[2]) || !runIDPattern.MatchString(seg[4]) {
+	if len(seg) != 5 || seg[0] != "app" || seg[1] != src.Org || seg[3] != "runs" || !runIDPattern.MatchString(seg[4]) {
 		return "", "", false
 	}
 	return seg[2], seg[4], true
+}
+
+// countUnrecognized counts statuses that link to src.Host but that FindRun
+// cannot use for a reason other than naming another workspace's run: a URL
+// or status name shaped differently from what FindRun expects. Such a status
+// suggests the PROVISIONAL shapes are wrong, so "no plan" would mislead.
+func countUnrecognized(statuses []gitlab.CommitStatus, src Source) int {
+	n := 0
+	for _, s := range statuses {
+		u, err := url.Parse(s.TargetURL)
+		if err != nil || u.Host != src.Host {
+			continue
+		}
+		ws, _, ok := parseRunShape(s.TargetURL, src)
+		if !ok || (slices.Contains(src.Workspaces, ws) && !statusNameMatches(s.Name, src.Org, ws)) {
+			n++
+		}
+	}
+	return n
 }

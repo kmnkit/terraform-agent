@@ -23,6 +23,9 @@ const (
 	maxAttempts     = 4
 	baseBackoff     = time.Second
 	rateLimitPhrase = "rate limit exceeded"
+	// callTimeout bounds one tool call attempt, so a hung server cannot use up
+	// the process deadline.
+	callTimeout = 60 * time.Second
 )
 
 // Caller invokes an allowlisted MCP tool by its logical name.
@@ -36,8 +39,10 @@ type Client struct {
 	allowlist map[string]string
 	home      string
 	sleep     func(ctx context.Context, d time.Duration) error
-	closeOnce sync.Once
-	closeErr  error
+	// callTimeout is callTimeout outside tests.
+	callTimeout time.Duration
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 // Start launches cfg.McpBinaryPath with only the allowlisted tools enabled and
@@ -66,10 +71,11 @@ func Start(ctx context.Context, cfg config.Config, tfeTokenFile string) (*Client
 		return nil, classify(ctx, "start MCP server", err)
 	}
 	return &Client{
-		session:   session,
-		allowlist: cfg.McpToolAllowlist,
-		home:      home,
-		sleep:     sleepCtx,
+		session:     session,
+		allowlist:   cfg.McpToolAllowlist,
+		home:        home,
+		sleep:       sleepCtx,
+		callTimeout: callTimeout,
 	}, nil
 }
 
@@ -142,7 +148,8 @@ func (c *Client) VerifyTools(ctx context.Context) error {
 
 // Call runs the tool registered under logicalName and returns its text
 // content. Rate-limit tool errors are retried with exponential backoff, up to
-// maxAttempts attempts. Errors never contain arguments or response text.
+// maxAttempts attempts, each bounded by the per-call timeout. Errors never
+// contain arguments or response text.
 func (c *Client) Call(ctx context.Context, logicalName string, args map[string]any) (string, error) {
 	actual, ok := c.allowlist[logicalName]
 	if !ok {
@@ -165,6 +172,8 @@ func (c *Client) Call(ctx context.Context, logicalName string, args map[string]a
 }
 
 func (c *Client) callOnce(ctx context.Context, actual string, args map[string]any) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.callTimeout)
+	defer cancel()
 	res, err := c.session.CallTool(ctx, &mcp.CallToolParams{Name: actual, Arguments: args})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {

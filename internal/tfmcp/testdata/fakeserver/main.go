@@ -57,6 +57,10 @@ func main() {
 		"fail": func(_ context.Context, _ *mcp.CallToolRequest, a args) (*mcp.CallToolResult, any, error) {
 			return text("RESPONSE-PAYLOAD "+a.Secret, true), nil, nil
 		},
+		"hang": func(ctx context.Context, _ *mcp.CallToolRequest, _ args) (*mcp.CallToolResult, any, error) {
+			<-ctx.Done()
+			return text("late", false), nil, nil
+		},
 		"big": func(context.Context, *mcp.CallToolRequest, args) (*mcp.CallToolResult, any, error) {
 			return text(strings.Repeat("x", bigBytes), false), nil, nil
 		},

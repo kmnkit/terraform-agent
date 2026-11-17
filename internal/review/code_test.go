@@ -38,13 +38,14 @@ type fakeGitLab struct {
 	jobs      []gitlab.Job
 	artifacts map[int64][]byte
 	jobsErr   error
+	diffsErr  error
 	// plan flow
 	statuses   []gitlab.CommitStatus
 	statusSHAs []string
 }
 
 func (f *fakeGitLab) MergeRequestDiffs(context.Context, int) ([]gitlab.FileDiff, error) {
-	return f.diffs, nil
+	return f.diffs, f.diffsErr
 }
 
 func (f *fakeGitLab) FileAtRef(_ context.Context, path, ref string) ([]byte, error) {
@@ -98,8 +99,13 @@ func (s *fakeStore) CurrentUser(context.Context) (gitlab.User, error) {
 	return gitlab.User{ID: botID}, nil
 }
 
-func (s *fakeStore) MergeRequest(context.Context, int) (gitlab.MergeRequest, error) {
+// MergeRequest honours ctx like the real client, so publishing on a
+// cancelled context fails.
+func (s *fakeStore) MergeRequest(ctx context.Context, _ int) (gitlab.MergeRequest, error) {
 	s.calls++
+	if err := ctx.Err(); err != nil {
+		return gitlab.MergeRequest{}, err
+	}
 	return gitlab.MergeRequest{SHA: s.sha}, nil
 }
 
@@ -183,6 +189,7 @@ type fakeNarrator struct {
 	failure    string
 	risksErr   error
 	failureErr error
+	risksHook  func() // runs inside PlanRisks, e.g. to cancel the run
 }
 
 func (n *fakeNarrator) ReviewFindings(_ context.Context, in llm.ReviewInput) ([]model.Finding, error) {
@@ -193,6 +200,9 @@ func (n *fakeNarrator) ReviewFindings(_ context.Context, in llm.ReviewInput) ([]
 
 func (n *fakeNarrator) PlanRisks(_ context.Context, s model.PlanSummary) ([]string, error) {
 	n.risksIn = append(n.risksIn, s)
+	if n.risksHook != nil {
+		n.risksHook()
+	}
 	return n.risks, n.risksErr
 }
 
@@ -573,6 +583,68 @@ func TestRunCode_PipelineJobsErrorIsReturned(t *testing.T) {
 	if err := h.run(t); !errors.Is(err, h.gl.jobsErr) {
 		t.Fatalf("err = %v, want wrapped jobs error", err)
 	}
+	assertCodeFailed(t, h, false)
+}
+
+// assertCodeFailed checks the analysis-failed code note: static checks when
+// withChecks, no findings, no error text, and that the LLM was not called.
+func assertCodeFailed(t *testing.T, h *harness, withChecks bool) {
+	t.Helper()
+	body := h.store.body(t)
+	mustContain(t, body, "> 분석 실패:", "소견을 생성하지 못했습니다.")
+	if withChecks {
+		mustContain(t, body, "| fmt | 통과 | ok |")
+	} else {
+		mustContain(t, body, "정적 검사 결과 없음")
+	}
+	if h.nar.calls != 0 {
+		t.Errorf("LLM called %d times", h.nar.calls)
+	}
+	for _, s := range []string{"boom", "gitlab 500", "Argument", "Unclosed"} {
+		if strings.Contains(body, s) {
+			t.Errorf("note carries error text %q:\n%s", s, body)
+		}
+	}
+}
+
+func TestRunCode_DiffFetchErrorPostsAnalysisFailed(t *testing.T) {
+	h := newHarness()
+	h.gl.diffsErr = errors.New("diffs boom")
+	if err := h.run(t); !errors.Is(err, h.gl.diffsErr) {
+		t.Fatalf("err = %v, want wrapped diff error", err)
+	}
+	assertCodeFailed(t, h, false)
+}
+
+// A single HCL syntax error must not hide the static checks.
+func TestRunCode_ScanErrorPostsAnalysisFailedWithChecks(t *testing.T) {
+	h := newHarness()
+	h.gl.files["env/main.tf"] = "resource \"google_storage_bucket\" \"logs\" {\n  name = \n"
+	if err := h.run(t); err == nil {
+		t.Fatal("want scan error")
+	}
+	assertCodeFailed(t, h, true)
+}
+
+func TestRunCode_ProviderDeclsErrorPostsAnalysisFailedWithChecks(t *testing.T) {
+	h := newHarness()
+	h.gl.files["env/versions.tf"] = "terraform {\n  required_providers {\n"
+	if err := h.run(t); err == nil {
+		t.Fatal("want provider declarations error")
+	}
+	assertCodeFailed(t, h, true)
+}
+
+func TestRunCode_CancelledRunStillPostsNotice(t *testing.T) {
+	h := newHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.nar.err = context.Canceled
+	err := RunCode(ctx, h.deps(), input.Input{MRIID: 7, SHA: headSHA, PipelineID: 900})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	mustContain(t, h.store.body(t), "> 분석 실패:")
 }
 
 func TestRunCode_PrivateProviderMakesNoMCPCalls(t *testing.T) {

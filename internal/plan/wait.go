@@ -28,6 +28,10 @@ var (
 	// ErrSHAMismatch means the run was created from another commit than the
 	// MR head (typically an older push).
 	ErrSHAMismatch = errors.New("plan: run commit SHA does not match MR head")
+	// ErrUnrecognizedStatus means no trusted status appeared within the
+	// initial wait, but at least one status linked to the HCP host in a shape
+	// FindRun does not accept, so a plan may exist that could not be read.
+	ErrUnrecognizedStatus = errors.New("plan: HCP Terraform status not recognized")
 	// ErrWorkspaceMismatch means the run belongs to another org or workspace
 	// than the one it was linked as (a possible forgery).
 	ErrWorkspaceMismatch = errors.New("plan: run does not belong to the configured org and workspace")
@@ -119,6 +123,10 @@ func sleepWithin(ctx context.Context, clock Clock, start time.Time, limit time.D
 	return clock.Sleep(ctx, min(pollInterval, remaining))
 }
 
+// findRunWithin polls the statuses until FindRun matches or initial expires.
+// On expiry it returns ErrUnrecognizedStatus (with the count of such statuses
+// in the last poll, never their content) instead of ErrNoPlan when any status
+// linked to the HCP host could not be used.
 func findRunWithin(ctx context.Context, ss StatusSource, src Source, initial time.Duration, start time.Time, clock Clock) (RunRef, error) {
 	for {
 		statuses, err := ss.CommitStatuses(ctx)
@@ -128,13 +136,21 @@ func findRunWithin(ctx context.Context, ss StatusSource, src Source, initial tim
 		if ref, ok := FindRun(statuses, src); ok {
 			return ref, nil
 		}
-		if err := sleepWithin(ctx, clock, start, initial); err != nil {
-			if errors.Is(err, ErrTimeout) {
-				return RunRef{}, ErrNoPlan
-			}
+		err = sleepWithin(ctx, clock, start, initial)
+		if errors.Is(err, ErrTimeout) {
+			return RunRef{}, noRunError(statuses, src)
+		}
+		if err != nil {
 			return RunRef{}, err
 		}
 	}
+}
+
+func noRunError(statuses []gitlab.CommitStatus, src Source) error {
+	if n := countUnrecognized(statuses, src); n > 0 {
+		return fmt.Errorf("%w (%d statuses)", ErrUnrecognizedStatus, n)
+	}
+	return ErrNoPlan
 }
 
 func runState(ctx context.Context, c tfmcp.Caller, src Source, ref RunRef) (RunState, error) {

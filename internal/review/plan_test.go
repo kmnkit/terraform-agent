@@ -295,7 +295,22 @@ func TestRunPlan_RunForOtherCommitPostsUnverifiedAndFails(t *testing.T) {
 	}
 }
 
-func TestRunPlan_RunOfOtherWorkspacePostsNothingAndFails(t *testing.T) {
+const planErrorNotice = "> 분석 실패: 이 커밋의 plan을 분석하지 못했습니다."
+
+// assertPlanError checks ws got the fixed analysis-failed note: no run link,
+// no summary.
+func assertPlanError(t *testing.T, h *planHarness, ws string) {
+	t.Helper()
+	body := h.noteFor(t, ws)
+	mustContain(t, body, planErrorNotice)
+	for _, s := range []string{"실행:", "변경 요약", "app.terraform.io"} {
+		if strings.Contains(body, s) {
+			t.Errorf("analysis-failed note contains %q:\n%s", s, body)
+		}
+	}
+}
+
+func TestRunPlan_RunOfOtherWorkspacePostsAnalysisFailedAndFails(t *testing.T) {
 	for name, details := range map[string]string{
 		"workspace":               runDetails("run-X1", "planned", "plan-1", headSHA, "other-ws", tfOrg),
 		"org":                     runDetails("run-X1", "planned", "plan-1", headSHA, wsProd, "evil"),
@@ -308,9 +323,7 @@ func TestRunPlan_RunOfOtherWorkspacePostsNothingAndFails(t *testing.T) {
 			if !errors.Is(err, plan.ErrWorkspaceMismatch) {
 				t.Fatalf("err = %v, want ErrWorkspaceMismatch", err)
 			}
-			if len(h.store.notes) != 0 || h.store.calls != 0 {
-				t.Errorf("nothing may be posted: notes=%d storeCalls=%d", len(h.store.notes), h.store.calls)
-			}
+			assertPlanError(t, h, wsProd)
 		})
 	}
 }
@@ -362,10 +375,11 @@ func TestRunPlan_OneWorkspaceFailingDoesNotStopOthers(t *testing.T) {
 	if !errors.Is(err, plan.ErrWorkspaceMismatch) {
 		t.Fatalf("err = %v", err)
 	}
-	if len(h.store.notes) != 1 {
-		t.Fatalf("notes = %d, want 1", len(h.store.notes))
+	if len(h.store.notes) != 2 {
+		t.Fatalf("notes = %d, want 2", len(h.store.notes))
 	}
-	h.noteFor(t, wsProd)
+	assertPlanError(t, h, wsDev)
+	mustContain(t, h.noteFor(t, wsProd), "- "+riskText)
 }
 
 func TestRunPlan_RiskLLMErrorPostsAnalysisFailed(t *testing.T) {
@@ -410,17 +424,124 @@ func TestRunPlan_StaleHeadIsNotAnError(t *testing.T) {
 	mustContain(t, h.logs.String(), "level=INFO msg=\"review: merge request head moved; skipping plan publish\"")
 }
 
-func TestRunPlan_MCPErrorIsRecordedWithoutPosting(t *testing.T) {
+func TestRunPlan_StageErrorsPostAnalysisFailed(t *testing.T) {
+	stageErr := errors.New("stage down")
+	for name, setup := range map[string]func(h *planHarness){
+		"plan JSON call": func(h *planHarness) {
+			h.addFinished(wsProd, "run-OK1", "plan-1")
+			h.pm.errs[plan.ToolGetPlanJSON] = stageErr
+		},
+		"run details call": func(h *planHarness) {
+			h.addFinished(wsProd, "run-OK1", "plan-1")
+			h.pm.errs[plan.ToolGetRunDetails] = stageErr
+		},
+		"plan logs call": func(h *planHarness) {
+			h.addFailed(wsProd, "run-ERR1", "plan-9", failedLogFixture)
+			h.pm.errs[plan.ToolGetPlanLogs] = stageErr
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newPlanHarness(wsProd)
+			setup(h)
+			if err := h.runPlan(t); !errors.Is(err, stageErr) {
+				t.Fatalf("err = %v, want wrapping %v", err, stageErr)
+			}
+			assertPlanError(t, h, wsProd)
+			if strings.Contains(h.noteFor(t, wsProd), stageErr.Error()) {
+				t.Error("note carries error text")
+			}
+		})
+	}
+}
+
+func TestRunPlan_WrongShapePlanJSONPostsAnalysisFailed(t *testing.T) {
 	h := newPlanHarness(wsProd)
 	h.addFinished(wsProd, "run-OK1", "plan-1")
-	mcpErr := errors.New("mcp down")
-	h.pm.errs[plan.ToolGetPlanJSON] = mcpErr
-	if err := h.runPlan(t); !errors.Is(err, mcpErr) {
-		t.Fatalf("err = %v", err)
+	h.pm.planJSON["plan-1"] = `{"data":{"type":"plans"}}`
+	if err := h.runPlan(t); err == nil {
+		t.Fatal("want error")
 	}
-	if len(h.store.notes) != 0 {
-		t.Errorf("notes = %d, want 0", len(h.store.notes))
+	assertPlanError(t, h, wsProd)
+	if h.llmCalls() != 0 {
+		t.Error("LLM called for an unreadable plan")
 	}
+}
+
+func TestRunPlan_MissingPlanIDPostsAnalysisFailed(t *testing.T) {
+	h := newPlanHarness(wsProd)
+	h.addRun(wsProd, "run-OK1", runDetails("run-OK1", "planned", "", headSHA, wsProd, tfOrg))
+	if err := h.runPlan(t); err == nil {
+		t.Fatal("want error")
+	}
+	assertPlanError(t, h, wsProd)
+}
+
+func TestRunPlan_UnrecognizedHCPStatusPostsUnverified(t *testing.T) {
+	h := newPlanHarness(wsProd)
+	h.gl.statuses = []gitlab.CommitStatus{{
+		Name: "HCP Terraform/" + tfOrg + "/" + wsProd, Status: "success",
+		TargetURL: "https://app.terraform.io/app/" + tfOrg + "/" + wsProd + "/runs/run-NEW1",
+	}}
+	err := h.runPlan(t)
+	if !errors.Is(err, plan.ErrUnrecognizedStatus) {
+		t.Fatalf("err = %v, want ErrUnrecognizedStatus", err)
+	}
+	body := h.noteFor(t, wsProd)
+	mustContain(t, body, "이 커밋의 plan을 확인하지 못했습니다.")
+	if strings.Contains(body, "찾지 못했습니다") || strings.Contains(body, "run-NEW1") {
+		t.Errorf("misleading or leaking body:\n%s", body)
+	}
+	if strings.Contains(h.logs.String(), "run-NEW1") {
+		t.Errorf("log leaks the status URL:\n%s", h.logs.String())
+	}
+}
+
+// The plan wait ends postWaitReserve before the process deadline, even when
+// waits.total would allow more, so the timeout notice still gets posted.
+func TestRunPlan_WaitIsBoundedByDeadline(t *testing.T) {
+	h := newPlanHarness(wsProd)
+	h.addRun(wsProd, "run-SLOW1", runDetails("run-SLOW1", "planning", "plan-1", headSHA, wsProd, tfOrg))
+	d := h.planDeps()
+	clock := d.Clock.(*stepClock)
+	start := clock.now
+	d.Config.Waits = config.Waits{Initial: time.Minute, Total: 30 * time.Minute}
+	ctx, cancel := context.WithTimeout(context.Background(), postWaitReserve+2*time.Minute)
+	defer cancel()
+	if err := RunPlan(ctx, d, input.Input{MRIID: 7, SHA: headSHA, PipelineID: 900}); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	if waited := clock.now.Sub(start); waited > 2*time.Minute {
+		t.Fatalf("waited %v, want at most the 2m left before the reserve", waited)
+	}
+	mustContain(t, h.store.body(t), "대기 시간 안에 plan이 끝나지 않았습니다.")
+}
+
+func TestRunPlan_NoTimeLeftPostsAnalysisFailed(t *testing.T) {
+	h := newPlanHarness(wsProd)
+	h.addFinished(wsProd, "run-OK1", "plan-1")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := RunPlan(ctx, h.planDeps(), input.Input{MRIID: 7, SHA: headSHA, PipelineID: 900}); err == nil {
+		t.Fatal("want error")
+	}
+	assertPlanError(t, h, wsProd)
+	if len(h.pm.calls) != 0 {
+		t.Errorf("MCP called without time to wait: %v", h.pm.calls)
+	}
+}
+
+// Notices are posted on a detached context, so a run cancelled by the
+// deadline or a signal still replaces the previous commit's note.
+func TestRunPlan_CancelledRunStillPostsNotice(t *testing.T) {
+	h := newPlanHarness(wsProd)
+	h.addFinished(wsProd, "run-OK1", "plan-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	h.nar.risksHook = cancel
+	h.nar.risksErr = context.Canceled
+	if err := RunPlan(ctx, h.planDeps(), input.Input{MRIID: 7, SHA: headSHA, PipelineID: 900}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	mustContain(t, h.store.body(t), "> 분석 실패: plan 요약만 표시합니다.")
 }
 
 // Review Focus 1: plan values, tokens and raw MCP responses never reach the
