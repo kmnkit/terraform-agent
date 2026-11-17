@@ -36,6 +36,7 @@ func TestSanitize(t *testing.T) {
 		{"truncate keeps runes whole", "😀😀😀😀", 3, "😀😀…"},
 		{"limit one", "abc", 1, "…"},
 		{"limit zero", "abc", 0, ""},
+		{"lone CR before slash", "a\r/merge", 100, "a\n" + zw + "/merge"},
 		{"decimal entity mention", "&#64;user", 100, "&amp;#64;user"},
 		{"hex entity mention", "&#x40;user", 100, "&amp;#x40;user"},
 		{"named entity mention", "&commat;user", 100, "&amp;commat;user"},

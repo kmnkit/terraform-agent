@@ -36,11 +36,14 @@ func Sanitize(text string, maxLen int) string {
 	return truncateRunes(strings.TrimSpace(neutralize(text)), maxLen)
 }
 
+var lineEndings = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
 // neutralize makes untrusted text inert in GitLab markdown: it strips links
 // (inline, reference and bare URLs), images, HTML, comments and marker text,
 // escapes "&" so entities such as &#64; render literally, and breaks @mentions
 // and line-start "/" quick actions with a zero-width space.
 func neutralize(text string) string {
+	text = lineEndings.Replace(text)
 	text = stripMarkup(text)
 	text = ampersand.ReplaceAllStringFunc(text, escapeAmpersand)
 	text = mention.ReplaceAllString(text, "@"+zeroWidthSpace+"$1")

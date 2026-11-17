@@ -238,3 +238,21 @@ func TestUntrustedPlanTextIsNeutralized(t *testing.T) {
 		t.Fatal("줄 첫머리 / 가 남음")
 	}
 }
+
+func TestFailureLineBreaksCannotExposeQuickAction(t *testing.T) {
+	const zw = "\u200b"
+	for _, failure := range []string{"\r/merge", "\r\r/x", "a\r\n/merge"} {
+		v := planView(PlanFailed)
+		v.Failure = failure
+		body := Plan(v)
+		section := body[strings.Index(body, "### plan 실패"):]
+		for _, line := range strings.Split(section, "\n")[1:] {
+			if strings.HasPrefix(strings.TrimLeft(line, " \t"), "/") {
+				t.Fatalf("Failure %q: 줄 첫머리 / 가 남음:\n%s", failure, body)
+			}
+		}
+		if !strings.Contains(section, zw+"/") {
+			t.Fatalf("Failure %q: 무력화 흔적이 없음:\n%s", failure, body)
+		}
+	}
+}
