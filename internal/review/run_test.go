@@ -74,7 +74,7 @@ type diagMCP struct {
 }
 
 func (m *diagMCP) Call(ctx context.Context, name string, args map[string]any) (string, error) {
-	if slices.Contains(diagnosticTools, name) {
+	if slices.Contains(DiagnosticTools, name) {
 		m.diag = append(m.diag, name)
 		return payloadSentinel, m.diagErr
 	}
@@ -137,8 +137,8 @@ func TestRun_HappyPathRunsDiagnosticsAndBothFlows(t *testing.T) {
 	if h.tools.calls != 1 {
 		t.Errorf("VerifyTools calls = %d, want 1", h.tools.calls)
 	}
-	if !slices.Equal(h.dm.diag, diagnosticTools) {
-		t.Errorf("diagnostics = %v, want %v", h.dm.diag, diagnosticTools)
+	if !slices.Equal(h.dm.diag, DiagnosticTools) {
+		t.Errorf("diagnostics = %v, want %v", h.dm.diag, DiagnosticTools)
 	}
 	if len(h.store.notes) != 2 {
 		t.Fatalf("notes = %d, want code + plan", len(h.store.notes))
@@ -249,7 +249,7 @@ func TestRun_DiagnosticFailureIsIgnoredAndNotLogged(t *testing.T) {
 		t.Errorf("notes = %d, want code + plan", len(h.store.notes))
 	}
 	logs := h.logs.String()
-	for _, name := range diagnosticTools {
+	for _, name := range DiagnosticTools {
 		if !strings.Contains(logs, name) {
 			t.Errorf("log lacks diagnostic %s:\n%s", name, logs)
 		}

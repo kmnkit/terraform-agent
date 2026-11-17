@@ -8,9 +8,9 @@ import (
 	"github.com/terraform-agent/internal/input"
 )
 
-// diagnosticTools are the allowlist logical names (phase0 A1) called only to
+// DiagnosticTools are the allowlist logical names (phase0 A1) called only to
 // log whether the TFE token works. Their results never fail the run.
-var diagnosticTools = []string{"whoami", "getTokenPermissions"}
+var DiagnosticTools = []string{"whoami", "getTokenPermissions"}
 
 // errStale signals that the MR head moved on and the run should end quietly.
 var errStale = errors.New("review: MR head moved on")
@@ -89,7 +89,7 @@ func checkPipeline(ctx context.Context, d Deps, in input.Input) error {
 // runDiagnostics logs only each tool's name and outcome, never its payload or
 // error text, and never fails.
 func runDiagnostics(ctx context.Context, d Deps) {
-	for _, name := range diagnosticTools {
+	for _, name := range DiagnosticTools {
 		_, err := d.MCP.Call(ctx, name, map[string]any{})
 		d.Log.Info("review: MCP diagnostic", "tool", name, "ok", err == nil)
 	}

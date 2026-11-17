@@ -51,3 +51,7 @@ docker push REGION-docker.pkg.dev/PROJECT/REPO/tf-review:$SHA
 | `waits.total` | 30m | plan 완료까지 최대 대기. job task timeout 45분, 프로세스 deadline 40분, 예약 8분 기준으로 `30m x workspace 1개 <= 32m`를 만족한다 |
 
 워크스페이스는 순차로 대기하므로 `waits.total x 워크스페이스 수`가 32분을 넘으면 설정이 거부된다. 워크스페이스를 늘리려면 `waits.total`을 줄인다.
+
+## 고정 digest 갱신
+
+베이스 이미지를 올릴 때는 태그를 바꾼 뒤 `docker buildx imagetools inspect IMAGE:TAG`로 index digest(최상단 `Digest:`)를 확인해 `build/Dockerfile`의 세 `FROM` 줄에 반영한다. 단일 아키텍처 매니페스트 digest가 아니라 index digest를 써야 `--platform linux/amd64`가 올바른 매니페스트를 고른다. 갱신 후 다시 빌드해 스모크를 확인한다.

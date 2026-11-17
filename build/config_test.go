@@ -5,11 +5,9 @@ import (
 
 	"github.com/terraform-agent/internal/config"
 	"github.com/terraform-agent/internal/plan"
+	"github.com/terraform-agent/internal/review"
 	"github.com/terraform-agent/internal/tfdocs"
 )
-
-// diagnosticTools mirror review.diagnosticTools, which is unexported.
-var diagnosticTools = []string{"whoami", "getTokenPermissions"}
 
 func TestImageConfig_LoadsAndPassesValidation(t *testing.T) {
 	if _, err := config.Load("config.json"); err != nil {
@@ -26,7 +24,7 @@ func TestImageConfig_AllowlistCoversEveryToolUsedInCode(t *testing.T) {
 		tfdocs.ToolSearchProviderDocs, tfdocs.ToolProviderDetails, tfdocs.ToolLatestProviderVersion,
 		plan.ToolGetRunDetails, plan.ToolGetPlanJSON, plan.ToolGetPlanLogs,
 	}
-	used = append(used, diagnosticTools...)
+	used = append(used, review.DiagnosticTools...)
 	for _, name := range used {
 		if cfg.McpToolAllowlist[name] == "" {
 			t.Errorf("mcpToolAllowlist has no entry for logical tool %q", name)
