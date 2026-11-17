@@ -44,7 +44,7 @@ func TestLoad_Valid(t *testing.T) {
 	if c.Limits.DiffBytes != 100000 || c.Limits.LLMOutputBytes != 8000 {
 		t.Errorf("limits: %+v", c.Limits)
 	}
-	if c.Waits.Initial != 10*time.Minute || c.Waits.Total != 20*time.Minute {
+	if c.Waits.Initial != 10*time.Minute || c.Waits.Total != 16*time.Minute {
 		t.Errorf("waits: %+v", c.Waits)
 	}
 	if c.TokenFiles.TFE != "/secrets/tfe/token" || c.TokenFiles.GitLab != "/secrets/gitlab/token" {
@@ -116,29 +116,43 @@ func TestLoad_RejectsInvalidWaits(t *testing.T) {
 			t.Errorf("%s: want error", repl)
 		}
 	}
-	if _, err := Load(mutate(t, `"total": "20m"`, `"total": "0s"`)); err == nil {
+	if _, err := Load(mutate(t, `"total": "16m"`, `"total": "0s"`)); err == nil {
 		t.Error("total 0s: want error")
 	}
 }
 
-// Workspaces are waited sequentially inside the 40m process deadline.
-func TestLoad_TotalWaitAcrossWorkspacesWithinDeadline(t *testing.T) {
+// Workspaces are waited sequentially inside ProcessDeadline - WaitReserve
+// (40m - 8m = 32m); the fixture has 2 workspaces.
+func TestLoad_TotalWaitAcrossWorkspacesWithinBudget(t *testing.T) {
 	cases := []struct {
 		total   string
 		wantErr bool
 	}{
-		{"20m", false},     // 2 x 20m = 40m: exactly the deadline
-		{"20m1s", true},    // 2 x 20m1s > 40m
+		{"16m", false},     // 2 x 16m = 32m: exactly the budget
+		{"16m500ms", true}, // 2 x 16m0.5s = 32m1s
+		{"20m", true},      // 2 x 20m = 40m: no reserve left
 		{"2562047h", true}, // huge value must not overflow into a pass
 	}
 	for _, tc := range cases {
-		_, err := Load(mutate(t, `"total": "20m"`, `"total": "`+tc.total+`"`))
+		_, err := Load(mutate(t, `"total": "16m"`, `"total": "`+tc.total+`"`))
 		if tc.wantErr && (err == nil || !strings.Contains(err.Error(), "waits.total")) {
 			t.Errorf("total %s: want waits.total error, got %v", tc.total, err)
 		}
 		if !tc.wantErr && err != nil {
 			t.Errorf("total %s: unexpected error %v", tc.total, err)
 		}
+	}
+}
+
+// The find phase is bounded by Initial, so Initial > Total would let one
+// workspace wait longer than Total.
+func TestLoad_RejectsInitialAboveTotal(t *testing.T) {
+	if _, err := Load(mutate(t, `"initial": "10m"`, `"initial": "16m1s"`)); err == nil ||
+		!strings.Contains(err.Error(), "waits.initial") {
+		t.Fatalf("want waits.initial error, got %v", err)
+	}
+	if _, err := Load(mutate(t, `"initial": "10m"`, `"initial": "16m"`)); err != nil {
+		t.Fatalf("initial == total: unexpected error %v", err)
 	}
 }
 

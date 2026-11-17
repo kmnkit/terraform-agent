@@ -275,6 +275,25 @@ func TestRun_CodeFailureStillRunsPlanAndFails(t *testing.T) {
 	h.noteFor(t, "ws-a")
 }
 
+// Preflight must work before MCP and the LLM exist (main runs it first).
+func TestPreflight_NeedsOnlyGitLabConfigAndLog(t *testing.T) {
+	h := newRunHarness()
+	full := h.runDeps()
+	d := Deps{GitLab: h.rgl, Config: full.Config, Log: full.Log}
+	in := input.Input{MRIID: 7, SHA: headSHA, PipelineID: runPipelineID}
+	if ok, err := Preflight(context.Background(), d, in); !ok || err != nil {
+		t.Fatalf("Preflight = %v, %v; want true, nil", ok, err)
+	}
+	h.rgl.mr.SHA = strings.Repeat("f", 40)
+	if ok, err := Preflight(context.Background(), d, in); ok || err != nil {
+		t.Fatalf("stale: Preflight = %v, %v; want false, nil", ok, err)
+	}
+	h.rgl.mr.SourceProjectID = otherProject
+	if ok, err := Preflight(context.Background(), d, in); ok || err == nil {
+		t.Fatalf("fork: Preflight = %v, %v; want false, error", ok, err)
+	}
+}
+
 func TestRun_DeadlineCancelsRun(t *testing.T) {
 	h := newRunHarness()
 	h.tools.block = true

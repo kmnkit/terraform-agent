@@ -101,21 +101,24 @@ func readToken(path string) (string, error) {
 	return strings.TrimSpace(string(raw)), nil
 }
 
+// execute runs review.Preflight (GitLab only) before starting the MCP child
+// process that holds the TFE token or creating ADC credentials, so a
+// disallowed, fork or stale job never spawns them.
 func execute(ctx context.Context, j job, log *slog.Logger) error {
 	cfg := j.cfg
 	gl, err := gitlab.NewClient(cfg.GitlabBaseURL, cfg.TokenFiles.GitLab, cfg.AllowedGitlabProjectID, httpx.NewClient(gitlabTimeout))
 	if err != nil {
 		return err
 	}
+	pre := review.Deps{GitLab: gl, Config: cfg, Log: log}
+	if proceed, err := review.Preflight(ctx, pre, j.in); err != nil || !proceed {
+		return err
+	}
 	mcp, err := tfmcp.Start(ctx, cfg, cfg.TokenFiles.TFE)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := mcp.Close(); err != nil {
-			log.Warn("tf-review: close MCP client", "error", err)
-		}
-	}()
+	defer closeMCP(mcp, log)
 	narrator, err := llm.NewVertexNarrator(ctx, cfg, httpx.NewClient(llmTimeout))
 	if err != nil {
 		return err
@@ -125,4 +128,12 @@ func execute(ctx context.Context, j job, log *slog.Logger) error {
 		Docs: tfdocs.NewLookuper(), Config: cfg, Clock: plan.RealClock{}, Log: log,
 	}
 	return review.Run(ctx, d, j.in)
+}
+
+// closeMCP logs instead of failing: a finished review should not fail the job
+// because the temp HOME could not be removed.
+func closeMCP(c *tfmcp.Client, log *slog.Logger) {
+	if err := c.Close(); err != nil {
+		log.Warn("tf-review: close MCP client", "error", err)
+	}
 }
