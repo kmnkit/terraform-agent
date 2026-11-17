@@ -26,6 +26,9 @@ const (
 	PlanNoPlan         PlanStatus = "noplan"
 	PlanAnalysisFailed PlanStatus = "analysisFailed"
 	PlanTimeout        PlanStatus = "timeout"
+	// PlanUnverified: the linked run could not be bound to this commit. It
+	// shows a fixed notice only, never a RunURL or summary.
+	PlanUnverified PlanStatus = "unverified"
 )
 
 // CodeReviewView is the data for a code review comment. render neutralizes all
@@ -112,10 +115,12 @@ var planTmpl = template.Must(template.New(planKind).Funcs(funcs).Parse(`{{marker
 
 workspace: {{code .Workspace}}
 기준 커밋: {{code (short .SHA)}}
-{{- if .RunURL}}
+{{- if and .RunURL (not (is .Status "unverified"))}}
 실행: {{.RunURL}}
 {{- end}}
-{{if is .Status "noplan"}}
+{{if is .Status "unverified"}}
+> 이 커밋의 plan을 확인하지 못했습니다. 연결된 HCP Terraform run이 이 커밋에서 만들어지지 않았습니다.
+{{- else if is .Status "noplan"}}
 > 이 커밋에 해당하는 plan을 찾지 못했습니다.
 {{- else if is .Status "timeout"}}
 > 대기 시간 안에 plan이 끝나지 않았습니다. 마지막으로 확인한 상태는 {{if .Queued}}대기 중(queued){{else}}실행 중(running){{end}}입니다.

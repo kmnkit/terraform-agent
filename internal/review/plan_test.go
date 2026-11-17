@@ -270,16 +270,29 @@ func TestRunPlan_FailedPlanWithoutErrorBlocksSkipsLLM(t *testing.T) {
 	}
 }
 
-func TestRunPlan_RunForOtherCommitPostsNothing(t *testing.T) {
+// A run of another commit may be a forged status, so the stale note of an
+// earlier analysis is replaced by the unverified notice and an error returned.
+func TestRunPlan_RunForOtherCommitPostsUnverifiedAndFails(t *testing.T) {
 	h := newPlanHarness(wsProd)
+	h.store.notes = []gitlab.Note{{ID: 50, AuthorID: botID, Body: render.Marker("plan", wsProd) + "\nold analysis"}}
 	h.addRun(wsProd, "run-OLD1", runDetails("run-OLD1", "planned", "plan-1", otherSHA, wsProd, tfOrg))
-	if err := h.runPlan(t); err != nil {
-		t.Fatalf("RunPlan: %v", err)
+	err := h.runPlan(t)
+	if !errors.Is(err, plan.ErrSHAMismatch) {
+		t.Fatalf("err = %v, want ErrSHAMismatch", err)
 	}
-	if len(h.store.notes) != 0 || h.store.calls != 0 || h.llmCalls() != 0 {
-		t.Errorf("nothing may be posted: notes=%d storeCalls=%d llm=%d", len(h.store.notes), h.store.calls, h.llmCalls())
+	body := h.store.body(t)
+	if !render.HasMarker(body, "plan", wsProd) || h.store.notes[0].ID != 50 {
+		t.Errorf("unverified notice must replace the workspace note:\n%s", body)
 	}
-	mustContain(t, h.logs.String(), "level=WARN", wsProd)
+	mustContain(t, body, "이 커밋의 plan을 확인하지 못했습니다.")
+	for _, s := range []string{"old analysis", "run-OLD1", "변경 요약"} {
+		if strings.Contains(body, s) {
+			t.Errorf("unverified body contains %q", s)
+		}
+	}
+	if h.llmCalls() != 0 || len(h.pm.callsTo(plan.ToolGetPlanJSON)) != 0 {
+		t.Errorf("unverified run must not be analyzed: llm=%d", h.llmCalls())
+	}
 }
 
 func TestRunPlan_RunOfOtherWorkspacePostsNothingAndFails(t *testing.T) {
@@ -355,23 +368,32 @@ func TestRunPlan_OneWorkspaceFailingDoesNotStopOthers(t *testing.T) {
 	h.noteFor(t, wsProd)
 }
 
-func TestRunPlan_LLMErrorPostsAnalysisFailed(t *testing.T) {
+func TestRunPlan_RiskLLMErrorPostsAnalysisFailed(t *testing.T) {
 	llmErr := errors.New("model unavailable")
-	cases := map[string]func(h *planHarness){
-		"finished": func(h *planHarness) { h.addFinished(wsProd, "run-OK1", "plan-1") },
-		"failed":   func(h *planHarness) { h.addFailed(wsProd, "run-ERR1", "plan-9", failedLogFixture) },
+	h := newPlanHarness(wsProd)
+	h.nar.risksErr = llmErr
+	h.addFinished(wsProd, "run-OK1", "plan-1")
+	if err := h.runPlan(t); !errors.Is(err, llmErr) {
+		t.Fatalf("err = %v, want wrapped LLM error", err)
 	}
-	for name, setup := range cases {
-		t.Run(name, func(t *testing.T) {
-			h := newPlanHarness(wsProd)
-			h.nar.planErr = llmErr
-			setup(h)
-			err := h.runPlan(t)
-			if !errors.Is(err, llmErr) {
-				t.Fatalf("err = %v, want wrapped LLM error", err)
-			}
-			mustContain(t, h.store.body(t), "> 분석 실패: plan 요약만 표시합니다.")
-		})
+	mustContain(t, h.store.body(t), "> 분석 실패: plan 요약만 표시합니다.", "추가 0 / 변경 1 / 삭제 0 / 교체 1")
+}
+
+// A failed plan must never look like a no-change plan, even without analysis.
+func TestRunPlan_FailureLLMErrorPostsFailedNotice(t *testing.T) {
+	llmErr := errors.New("model unavailable")
+	h := newPlanHarness(wsProd)
+	h.nar.failureErr = llmErr
+	h.addFailed(wsProd, "run-ERR1", "plan-9", failedLogFixture)
+	if err := h.runPlan(t); !errors.Is(err, llmErr) {
+		t.Fatalf("err = %v, want wrapped LLM error", err)
+	}
+	body := h.store.body(t)
+	mustContain(t, body, "### plan 실패", failureAnalysisFailedNotice)
+	for _, s := range []string{"추가 0", "분석 실패: plan 요약만"} {
+		if strings.Contains(body, s) {
+			t.Errorf("failed plan body contains %q:\n%s", s, body)
+		}
 	}
 }
 
@@ -423,6 +445,30 @@ func TestRunPlan_NoSecretsInLogsLLMInputOrBodies(t *testing.T) {
 	}
 	forbidden := append([]string{tokenSecret, runSecret, "TFE_TOKEN", planJSONFixture, failedLogFixture,
 		h.pm.runs["run-P1"], h.pm.runs["run-D1"]}, planSecrets...)
+	assertNoForbidden(t, surfaces, forbidden)
+}
+
+// Error paths: a malformed plan JSON carrying a secret and an LLM failure on
+// a failed plan must leave no secret in the returned error or the logs.
+func TestRunPlan_ErrorPathsLeakNoSecrets(t *testing.T) {
+	h := newPlanHarness(wsProd, wsDev)
+	h.nar.failureErr = errors.New("model unavailable")
+	brokenJSON := `{"variables":{"db_password":{"value":"VAR_SECRET_1a"}}, not json ` + tokenSecret
+	h.addRun(wsProd, "run-P1", runDetails("run-P1", "planned", "plan-p", headSHA, wsProd, tfOrg))
+	h.pm.planJSON["plan-p"] = brokenJSON
+	h.addFailed(wsDev, "run-D1", "plan-d", failedLogFixture)
+	err := h.runPlan(t)
+	if err == nil {
+		t.Fatal("want joined error from both workspaces")
+	}
+	surfaces := map[string]string{"err": err.Error(), "logs": h.logs.String()}
+	forbidden := append([]string{tokenSecret, runSecret, "TFE_TOKEN", brokenJSON, failedLogFixture,
+		h.pm.runs["run-P1"], h.pm.runs["run-D1"]}, planSecrets...)
+	assertNoForbidden(t, surfaces, forbidden)
+}
+
+func assertNoForbidden(t *testing.T, surfaces map[string]string, forbidden []string) {
+	t.Helper()
 	for name, text := range surfaces {
 		for _, s := range forbidden {
 			if strings.Contains(text, s) {

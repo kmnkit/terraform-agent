@@ -33,6 +33,10 @@ const (
 // noErrorBlocksNotice is posted for a failed plan whose log has no error block.
 const noErrorBlocksNotice = "plan 로그에서 에러 블록을 찾지 못했습니다. HCP Terraform 실행 화면에서 원인을 확인하세요."
 
+// failureAnalysisFailedNotice is posted for a failed plan when the LLM could
+// not explain its error blocks (ruling R25: never the no-change summary).
+const failureAnalysisFailedNotice = "plan이 실패했습니다. 에러 분석을 생성하지 못했습니다. HCP Terraform 실행 화면에서 확인하세요."
+
 // statusSource binds commit status listing to the MR head SHA.
 type statusSource struct {
 	gl  GitLabReader
@@ -80,9 +84,10 @@ func planWorkspace(ctx context.Context, d Deps, in input.Input, host, ws string)
 	return analyzeChanges(ctx, d, in, st.PlanID, view)
 }
 
-// handleWaitError posts the no-plan and timeout notices, skips runs of an
-// older commit, and records every other error (including a workspace or org
-// mismatch) without posting.
+// handleWaitError posts the no-plan and timeout notices, posts the unverified
+// notice for a run of another commit (it may be a forged status, so the stale
+// note must not survive; ruling R24), and records every other error
+// (including a workspace or org mismatch) without posting.
 func handleWaitError(ctx context.Context, d Deps, in input.Input, ws string, st plan.RunState, err error) error {
 	switch {
 	case errors.Is(err, plan.ErrNoPlan):
@@ -95,10 +100,21 @@ func handleWaitError(ctx context.Context, d Deps, in input.Input, ws string, st 
 			Status: render.PlanTimeout, Queued: st.Phase == plan.PhaseQueued,
 		})
 	case errors.Is(err, plan.ErrSHAMismatch):
-		d.Log.Warn("review: plan run is for another commit; skipping", "workspace", ws)
-		return nil
+		d.Log.Warn("review: plan run is for another commit; posting unverified notice", "workspace", ws)
+		return publishUnverified(ctx, d, in, ws, err)
 	}
 	return fmt.Errorf("review: wait for plan run of workspace %s: %w", ws, err)
+}
+
+// publishUnverified posts the unverified notice (no RunURL, no summary) and
+// returns the binding error, joined with any publish error.
+func publishUnverified(ctx context.Context, d Deps, in input.Input, ws string, bindErr error) error {
+	wrapped := fmt.Errorf("review: plan run of workspace %s not bound to commit: %w", ws, bindErr)
+	view := render.PlanView{Workspace: ws, SHA: in.SHA, Status: render.PlanUnverified}
+	if err := publishPlan(ctx, d, in, view); err != nil {
+		return errors.Join(wrapped, err)
+	}
+	return wrapped
 }
 
 // analyzeChanges aggregates the plan JSON into a value-free summary and asks
@@ -139,7 +155,7 @@ func analyzeFailure(ctx context.Context, d Deps, in input.Input, planID string, 
 	}
 	text, err := d.Narrator.PlanFailure(ctx, blocks)
 	if err != nil {
-		return publishPlanAnalysisFailed(ctx, d, in, view, fmt.Errorf("review: plan failure of workspace %s: %w", view.Workspace, err))
+		return publishFailureUnexplained(ctx, d, in, view, fmt.Errorf("review: plan failure of workspace %s: %w", view.Workspace, err))
 	}
 	view.Failure = text
 	return publishPlan(ctx, d, in, view)
@@ -151,8 +167,19 @@ func runURL(org, ws, runID string) string {
 	return config.TfeAddress + "/app/" + url.PathEscape(org) + "/" + url.PathEscape(ws) + "/runs/" + runID
 }
 
-// publishPlanAnalysisFailed posts the analysis-failed variant, then returns
-// llmErr (joined with any publish error).
+// publishFailureUnexplained keeps a failed plan rendered as failed, with the
+// fixed notice instead of an LLM explanation, then returns llmErr (joined
+// with any publish error).
+func publishFailureUnexplained(ctx context.Context, d Deps, in input.Input, view render.PlanView, llmErr error) error {
+	view.Failure = failureAnalysisFailedNotice
+	if err := publishPlan(ctx, d, in, view); err != nil {
+		return errors.Join(llmErr, err)
+	}
+	return llmErr
+}
+
+// publishPlanAnalysisFailed posts the analysis-failed variant (finished
+// plans only), then returns llmErr (joined with any publish error).
 func publishPlanAnalysisFailed(ctx context.Context, d Deps, in input.Input, view render.PlanView, llmErr error) error {
 	view.Status = render.PlanAnalysisFailed
 	view.Risks = nil

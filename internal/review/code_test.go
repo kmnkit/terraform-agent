@@ -177,11 +177,12 @@ type fakeNarrator struct {
 	findings []model.Finding
 	err      error
 	// plan flow
-	risksIn  []model.PlanSummary
-	blocksIn [][]string
-	risks    []string
-	failure  string
-	planErr  error
+	risksIn    []model.PlanSummary
+	blocksIn   [][]string
+	risks      []string
+	failure    string
+	risksErr   error
+	failureErr error
 }
 
 func (n *fakeNarrator) ReviewFindings(_ context.Context, in llm.ReviewInput) ([]model.Finding, error) {
@@ -192,12 +193,12 @@ func (n *fakeNarrator) ReviewFindings(_ context.Context, in llm.ReviewInput) ([]
 
 func (n *fakeNarrator) PlanRisks(_ context.Context, s model.PlanSummary) ([]string, error) {
 	n.risksIn = append(n.risksIn, s)
-	return n.risks, n.planErr
+	return n.risks, n.risksErr
 }
 
 func (n *fakeNarrator) PlanFailure(_ context.Context, blocks []string) (string, error) {
 	n.blocksIn = append(n.blocksIn, blocks)
-	return n.failure, n.planErr
+	return n.failure, n.failureErr
 }
 
 // --- fixtures ---

@@ -84,6 +84,8 @@ func TestGoldenComments(t *testing.T) {
 	timeoutRunning := timeoutQueued
 	timeoutRunning.Queued = false
 
+	unverified := PlanView{Workspace: "prod", SHA: testSHA, Status: PlanUnverified}
+
 	tests := []struct {
 		name string
 		got  string
@@ -97,6 +99,7 @@ func TestGoldenComments(t *testing.T) {
 		{"plan_analysis_failed", Plan(analysisFailed)},
 		{"plan_timeout_queued", Plan(timeoutQueued)},
 		{"plan_timeout_running", Plan(timeoutRunning)},
+		{"plan_unverified", Plan(unverified)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) { assertGolden(t, tc.name, tc.got) })
@@ -115,6 +118,16 @@ func TestCommentsStartWithMarkerAndShortSHA(t *testing.T) {
 	for _, body := range []string{code, plan} {
 		if !strings.Contains(body, "abcdef1") || strings.Contains(body, "abcdef12") {
 			t.Fatalf("short SHA만 표시해야 함:\n%s", body)
+		}
+	}
+}
+
+func TestPlanUnverifiedNeverShowsRunURLOrSummary(t *testing.T) {
+	v := planView(PlanUnverified)
+	body := Plan(v)
+	for _, s := range []string{v.RunURL, "실행:", "변경 요약", v.Risks[0]} {
+		if strings.Contains(body, s) {
+			t.Errorf("unverified body contains %q:\n%s", s, body)
 		}
 	}
 }
