@@ -325,3 +325,45 @@ func TestVerifyRunSHAFailsClosed(t *testing.T) {
 		t.Error("empty wantSHA must fail")
 	}
 }
+
+// Identity is checked before the SHA, so a run of another workspace is never
+// reported as a mere SHA mismatch (which callers treat as an older push).
+func TestWaitBindingErrorsWrapSentinels(t *testing.T) {
+	acme := `"relationships":{"organization":{"data":{"id":"acme"}}}`
+	cases := []struct {
+		name            string
+		payload         string
+		wantSHA, wantWS bool
+	}{
+		{"sha mismatch", runJSON("planned", "p", "deadbeef"), true, false},
+		{"other workspace", runJSONWS("planned", "p", "abc123", "ws-1", "other-ws", acme), false, true},
+		{"other org", runJSONWS("planned", "p", "abc123", "ws-1", "net-prod", `"relationships":{"organization":{"data":{"id":"evil"}}}`), false, true},
+		{"other workspace and sha", runJSONWS("planned", "p", "deadbeef", "ws-1", "other-ws", acme), false, true},
+		{"sha missing", runJSON("planned", "p", ""), false, false},
+		{"workspace missing and sha", runJSONWS("planned", "p", "deadbeef", "ws-999", "net-prod", acme), false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &fakeStatuses{byCall: func(int) []gitlab.CommitStatus { return goodStatus }}
+			_, err := Wait(context.Background(), ss, fixedCaller{tc.payload}, testSource, testWaits, newClock())
+			if err == nil {
+				t.Fatal("want error")
+			}
+			if got := errors.Is(err, ErrSHAMismatch); got != tc.wantSHA {
+				t.Errorf("Is(ErrSHAMismatch) = %v, want %v (err=%v)", got, tc.wantSHA, err)
+			}
+			if got := errors.Is(err, ErrWorkspaceMismatch); got != tc.wantWS {
+				t.Errorf("Is(ErrWorkspaceMismatch) = %v, want %v (err=%v)", got, tc.wantWS, err)
+			}
+		})
+	}
+}
+
+func TestVerifyRunSHAWrapsMismatchSentinelOnly(t *testing.T) {
+	if err := VerifyRunSHA(runJSON("planned", "p", "deadbeef"), "abc123"); !errors.Is(err, ErrSHAMismatch) {
+		t.Errorf("mismatch err = %v", err)
+	}
+	if err := VerifyRunSHA(runJSON("planned", "p", ""), "abc123"); err == nil || errors.Is(err, ErrSHAMismatch) {
+		t.Errorf("missing sha err = %v", err)
+	}
+}

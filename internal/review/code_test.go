@@ -38,6 +38,9 @@ type fakeGitLab struct {
 	jobs      []gitlab.Job
 	artifacts map[int64][]byte
 	jobsErr   error
+	// plan flow
+	statuses   []gitlab.CommitStatus
+	statusSHAs []string
 }
 
 func (f *fakeGitLab) MergeRequestDiffs(context.Context, int) ([]gitlab.FileDiff, error) {
@@ -75,8 +78,9 @@ func (f *fakeGitLab) MergeRequestPipelines(context.Context, int) ([]gitlab.Pipel
 	return nil, nil
 }
 
-func (f *fakeGitLab) CommitStatuses(context.Context, string) ([]gitlab.CommitStatus, error) {
-	return nil, nil
+func (f *fakeGitLab) CommitStatuses(_ context.Context, sha string) ([]gitlab.CommitStatus, error) {
+	f.statusSHAs = append(f.statusSHAs, sha)
+	return f.statuses, nil
 }
 
 // fakeStore is a stateful NoteStore so re-runs exercise the real upsert path.
@@ -172,6 +176,12 @@ type fakeNarrator struct {
 	in       llm.ReviewInput
 	findings []model.Finding
 	err      error
+	// plan flow
+	risksIn  []model.PlanSummary
+	blocksIn [][]string
+	risks    []string
+	failure  string
+	planErr  error
 }
 
 func (n *fakeNarrator) ReviewFindings(_ context.Context, in llm.ReviewInput) ([]model.Finding, error) {
@@ -180,12 +190,14 @@ func (n *fakeNarrator) ReviewFindings(_ context.Context, in llm.ReviewInput) ([]
 	return n.findings, n.err
 }
 
-func (n *fakeNarrator) PlanRisks(context.Context, model.PlanSummary) ([]string, error) {
-	return nil, errors.New("not used")
+func (n *fakeNarrator) PlanRisks(_ context.Context, s model.PlanSummary) ([]string, error) {
+	n.risksIn = append(n.risksIn, s)
+	return n.risks, n.planErr
 }
 
-func (n *fakeNarrator) PlanFailure(context.Context, []string) (string, error) {
-	return "", errors.New("not used")
+func (n *fakeNarrator) PlanFailure(_ context.Context, blocks []string) (string, error) {
+	n.blocksIn = append(n.blocksIn, blocks)
+	return n.failure, n.planErr
 }
 
 // --- fixtures ---

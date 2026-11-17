@@ -80,6 +80,10 @@ func TestGoldenComments(t *testing.T) {
 
 	codeEmpty := CodeReviewView{SHA: testSHA, VersionBasis: "none", Truncated: true}
 
+	timeoutQueued := PlanView{Workspace: "prod", RunURL: planView(PlanOK).RunURL, SHA: testSHA, Status: PlanTimeout, Queued: true}
+	timeoutRunning := timeoutQueued
+	timeoutRunning.Queued = false
+
 	tests := []struct {
 		name string
 		got  string
@@ -91,6 +95,8 @@ func TestGoldenComments(t *testing.T) {
 		{"plan_failed", Plan(failed)},
 		{"plan_noplan", Plan(noPlan)},
 		{"plan_analysis_failed", Plan(analysisFailed)},
+		{"plan_timeout_queued", Plan(timeoutQueued)},
+		{"plan_timeout_running", Plan(timeoutRunning)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) { assertGolden(t, tc.name, tc.got) })

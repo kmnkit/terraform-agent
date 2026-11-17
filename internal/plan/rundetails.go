@@ -82,20 +82,22 @@ func workspaceIdentity(inc includedEntry) (name, org string) {
 }
 
 // verify fails closed unless the run belongs to the trusted org and the
-// workspace named by ref, and was created from src.WantSHA.
+// workspace named by ref, and was created from src.WantSHA. Identity is
+// checked before the SHA so a run of another org or workspace always yields
+// ErrWorkspaceMismatch, never ErrSHAMismatch (which callers may treat as an
+// older push and skip quietly).
 func (d runInfo) verify(src Source, ref RunRef) error {
-	if err := d.verifySHA(src.WantSHA); err != nil {
-		return err
-	}
 	if d.workspaceName == "" || d.org == "" {
 		return errors.New("plan: run workspace or org not found in run details")
 	}
 	if d.org != src.Org || d.workspaceName != ref.Workspace {
-		return errors.New("plan: run does not belong to the configured org and workspace")
+		return ErrWorkspaceMismatch
 	}
-	return nil
+	return d.verifySHA(src.WantSHA)
 }
 
+// verifySHA wraps ErrSHAMismatch only for a present SHA that differs; a
+// missing SHA is a plain error so it can never pass as an older push.
 func (d runInfo) verifySHA(want string) error {
 	if want == "" {
 		return errors.New("plan: expected commit SHA is empty")
@@ -104,7 +106,7 @@ func (d runInfo) verifySHA(want string) error {
 		return errors.New("plan: run commit SHA not found")
 	}
 	if d.sha != want {
-		return errors.New("plan: run commit SHA does not match MR head")
+		return ErrSHAMismatch
 	}
 	return nil
 }

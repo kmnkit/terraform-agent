@@ -25,6 +25,7 @@ const (
 	PlanFailed         PlanStatus = "failed"
 	PlanNoPlan         PlanStatus = "noplan"
 	PlanAnalysisFailed PlanStatus = "analysisFailed"
+	PlanTimeout        PlanStatus = "timeout"
 )
 
 // CodeReviewView is the data for a code review comment. render neutralizes all
@@ -49,6 +50,9 @@ type PlanView struct {
 	Summary   model.PlanSummary
 	Risks     []string
 	Failure   string
+	// Queued is used by PlanTimeout only: the last observed run phase was
+	// queued (true) or running (false).
+	Queued bool
 }
 
 var funcs = template.FuncMap{
@@ -113,6 +117,8 @@ workspace: {{code .Workspace}}
 {{- end}}
 {{if is .Status "noplan"}}
 > 이 커밋에 해당하는 plan을 찾지 못했습니다.
+{{- else if is .Status "timeout"}}
+> 대기 시간 안에 plan이 끝나지 않았습니다. 마지막으로 확인한 상태는 {{if .Queued}}대기 중(queued){{else}}실행 중(running){{end}}입니다.
 {{- else}}
 {{- if is .Status "analysisFailed"}}
 > 분석 실패: plan 요약만 표시합니다. 위험 분석은 제공되지 않습니다.

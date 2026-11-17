@@ -25,6 +25,12 @@ var (
 	ErrNoPlan = errors.New("plan: no HCP Terraform run found for commit")
 	// ErrTimeout means the run did not reach a terminal status in time.
 	ErrTimeout = errors.New("plan: timed out waiting for run")
+	// ErrSHAMismatch means the run was created from another commit than the
+	// MR head (typically an older push).
+	ErrSHAMismatch = errors.New("plan: run commit SHA does not match MR head")
+	// ErrWorkspaceMismatch means the run belongs to another org or workspace
+	// than the one it was linked as (a possible forgery).
+	ErrWorkspaceMismatch = errors.New("plan: run does not belong to the configured org and workspace")
 )
 
 // Phase is a coarse view of an HCP run status.
