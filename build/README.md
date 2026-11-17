@@ -2,25 +2,37 @@
 
 Cloud Run Job이 실행하는 `tf-review` 이미지를 만든다. 이미지 안에는 Go 바이너리, `terraform-mcp-server` v1.4.1, 운영 설정 `config.json`이 들어 있다. 베이스는 셸이 없는 `distroless/static-debian12:nonroot`이며 CA 인증서를 포함하고 비루트로 실행한다. 모든 `FROM`은 digest로 고정했다(멀티 아키텍처 index digest이며 `--platform linux/amd64`가 amd64 매니페스트를 고른다).
 
-## 빌드
+## 빌드와 Artifact Registry 푸시 (Cloud Build)
 
-저장소 루트에서 실행한다. Cloud Run은 linux/amd64만 지원하므로 Apple Silicon에서도 `--platform`을 반드시 지정한다.
+로컬 Docker 없이 Cloud Build로 빌드하고 푸시한다. 로컬에는 `gcloud`만 있으면 된다. 저장소 루트에서 실행한다. Cloud Build 작업자는 linux/amd64이므로 Cloud Run 요구 사항을 그대로 만족한다.
+
+PowerShell:
+
+```powershell
+$SHA = git rev-parse --short=12 HEAD
+gcloud builds submit . --config build/cloudbuild.yaml --region REGION `
+  --substitutions "_IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/tf-review,_TAG=$SHA"
+```
+
+bash:
 
 ```sh
 SHA=$(git rev-parse --short=12 HEAD)
-docker build --platform linux/amd64 -f build/Dockerfile -t tf-review:$SHA .
+gcloud builds submit . --config build/cloudbuild.yaml --region REGION \
+  --substitutions "_IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/tf-review,_TAG=$SHA"
 ```
 
-이미지 태그는 커밋 SHA다. `latest` 같은 이동 태그는 쓰지 않는다. 어떤 코드와 설정이 배포됐는지 SHA로 추적한다.
+`REGION`, `PROJECT`, `REPO`는 실제 값으로 바꾼다. 이미지 태그는 커밋 SHA다. `latest` 같은 이동 태그는 쓰지 않는다. 어떤 코드와 설정이 배포됐는지 SHA로 추적한다. 커밋하지 않은 변경(예: 실제 값을 넣은 `config.json`)도 업로드되므로, 빌드 전 `git status`로 무엇이 들어가는지 확인한다.
 
-## Artifact Registry 푸시
+처음 한 번 준비:
 
-```sh
-docker tag tf-review:$SHA REGION-docker.pkg.dev/PROJECT/REPO/tf-review:$SHA
-docker push REGION-docker.pkg.dev/PROJECT/REPO/tf-review:$SHA
-```
+- Cloud Build API(`cloudbuild.googleapis.com`)를 활성화한다.
+- 실행하는 사용자에게 `roles/cloudbuild.builds.editor`를 준다.
+- Cloud Build가 쓰는 서비스 계정(프로젝트 설정에 따라 Compute Engine 기본 SA 또는 Cloud Build SA)에 대상 Artifact Registry 저장소의 `roles/artifactregistry.writer`를 준다.
 
-`REGION`, `PROJECT`, `REPO`는 실제 값으로 바꾼다. 푸시 전 `gcloud auth configure-docker REGION-docker.pkg.dev`가 필요하다.
+업로드 대상: 저장소에 `.gcloudignore`가 없으면 `gcloud`는 `.gitignore` 규칙으로 업로드 대상을 거른다. 따라서 `.mcp.json`, `CLAUDE.md` 등 gitignore된 파일은 올라가지 않는다. 그다음 Docker 빌드 단계에서 `.dockerignore`가 한 번 더 적용된다.
+
+Docker 라이선스를 쓸 수 있는 환경이라면 로컬 빌드도 가능하다: `docker build --platform linux/amd64 -f build/Dockerfile -t tf-review:$SHA .`
 
 ## 설정은 이미지에 포함된다
 
@@ -53,4 +65,4 @@ docker push REGION-docker.pkg.dev/PROJECT/REPO/tf-review:$SHA
 
 ## 고정 digest 갱신
 
-베이스 이미지를 올릴 때는 태그를 바꾼 뒤 `docker buildx imagetools inspect IMAGE:TAG`로 index digest(최상단 `Digest:`)를 확인해 `build/Dockerfile`의 세 `FROM` 줄에 반영한다. 단일 아키텍처 매니페스트 digest가 아니라 index digest를 써야 `--platform linux/amd64`가 올바른 매니페스트를 고른다. 갱신 후 다시 빌드해 스모크를 확인한다.
+베이스 이미지를 올릴 때는 태그를 바꾼 뒤 `crane digest IMAGE:TAG`(`go install github.com/google/go-containerregistry/cmd/crane@latest`, Docker 불필요) 또는 `docker buildx imagetools inspect IMAGE:TAG`의 최상단 `Digest:`로 index digest를 확인해 `build/Dockerfile`의 세 `FROM` 줄에 반영한다. 단일 아키텍처 매니페스트 digest가 아니라 index digest를 써야 `--platform linux/amd64`가 올바른 매니페스트를 고른다. 갱신 후 다시 빌드해 스모크를 확인한다.

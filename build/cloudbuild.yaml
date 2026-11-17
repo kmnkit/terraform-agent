@@ -1,0 +1,9 @@
+# Build and push the tf-review image with Cloud Build (no local Docker needed).
+# Run from the repo root; see build/README.md:
+#   gcloud builds submit . --config build/cloudbuild.yaml --region REGION \
+#     --substitutions "_IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/tf-review,_TAG=GIT_SHA"
+# Cloud Build workers are linux/amd64, which is what Cloud Run requires.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-f', 'build/Dockerfile', '-t', '${_IMAGE}:${_TAG}', '.']
+images: ['${_IMAGE}:${_TAG}']

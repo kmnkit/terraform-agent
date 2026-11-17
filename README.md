@@ -44,7 +44,7 @@ Cloud Run Job (tf-review イメージ, job SA)
 - HCP Terraform (`https://app.terraform.io` のみ対応) の organization と、VCS 連携で MR に commit status を付ける workspace。パイロットは prod 以外の workspace で始めます。
 - Vertex AI で `config.json` の `model` が使える Google Cloud project とリージョン。
 - linux/amd64 の GitLab Runner (静的チェックジョブが amd64 バイナリを取得します)。
-- ローカル開発: Go 1.26.11 以上 (`go.mod`)、イメージのビルドには Docker。
+- ローカル開発: Go 1.26.11 以上 (`go.mod`)。イメージのビルドは Cloud Build で行うため、ローカルには `gcloud` だけが必要です (Docker は不要)。
 - fork からの MR は対象外です。
 
 ## 必要な Google Cloud リソース
@@ -68,17 +68,34 @@ Cloud Run Job (tf-review イメージ, job SA)
 
 ## ビルドとイメージの push
 
-リポジトリのルートで実行します。Cloud Run は linux/amd64 のみ対応なので、Apple Silicon でも `--platform` を必ず指定します。
+ローカルの Docker は使わず、Cloud Build でビルドして Artifact Registry に push します (`build/cloudbuild.yaml`)。リポジトリのルートで実行します。Cloud Build のワーカーは linux/amd64 なので、Cloud Run の要件をそのまま満たします。
+
+PowerShell (Windows):
+
+```powershell
+$SHA = git rev-parse --short=12 HEAD
+gcloud builds submit . --config build/cloudbuild.yaml --region REGION `
+  --substitutions "_IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/tf-review,_TAG=$SHA"
+```
+
+bash:
 
 ```sh
 SHA=$(git rev-parse --short=12 HEAD)
-docker build --platform linux/amd64 -f build/Dockerfile -t tf-review:$SHA .
-
-gcloud auth configure-docker REGION-docker.pkg.dev
-docker tag tf-review:$SHA REGION-docker.pkg.dev/PROJECT/REPO/tf-review:$SHA
-docker push REGION-docker.pkg.dev/PROJECT/REPO/tf-review:$SHA
+gcloud builds submit . --config build/cloudbuild.yaml --region REGION \
+  --substitutions "_IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/tf-review,_TAG=$SHA"
 ```
 
+初回のみの準備:
+
+- Cloud Build API (`cloudbuild.googleapis.com`) を有効にします。
+- 実行するユーザーに `roles/cloudbuild.builds.editor` を付与します。
+- Cloud Build が使うサービスアカウント (project の設定により Compute Engine のデフォルト SA または Cloud Build SA) に、対象の Artifact Registry リポジトリの `roles/artifactregistry.writer` を付与します。
+
+注意:
+
+- コミットしていない変更 (実際の値を入れた `config.json` など) もアップロードされます。ビルド前に `git status` で内容を確認してください。
+- `.gcloudignore` がない場合、`gcloud` は `.gitignore` のルールでアップロード対象を除外します (`.mcp.json` などは送られません)。
 - イメージには `/app/tf-review`、`/app/terraform-mcp-server` (v1.4.1)、`/app/config.json` が入ります。ベースは `distroless/static-debian12:nonroot` で、すべての `FROM` を digest で固定しています。
 - タグはコミット SHA を使い、`latest` のような移動タグは使いません。
 - 詳細とベースイメージ digest の更新手順は `build/README.md` を参照してください。
