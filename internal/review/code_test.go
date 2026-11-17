@@ -277,7 +277,7 @@ func (h *harness) deps() Deps {
 		Narrator: h.nar,
 		Docs:     h.docs,
 		Config: config.Config{Limits: config.Limits{
-			DiffBytes: 10000, DocsBytes: 4000, PlanSummaryBytes: 4000, LLMOutputBytes: 4000,
+			DiffBytes: 10000, DocsBytes: 4000, LLMOutputBytes: 4000,
 		}},
 		Log: slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
@@ -348,11 +348,14 @@ func TestRunCode_ReviewInputContents(t *testing.T) {
 	}
 }
 
+const netModuleTF = "module \"net\" {\n  source  = \"terraform-google-modules/network/google\"\n  version = \"9.0.0\"\n}\n"
+
+const netModuleDiff = "@@ -0,0 +1,4 @@\n+module \"net\" {\n+  source  = \"terraform-google-modules/network/google\"\n+  version = \"9.0.0\"\n+}\n"
+
 func TestRunCode_ModulesGoToModuleContext(t *testing.T) {
 	h := newHarness()
-	h.gl.files["env/main.tf"] = "module \"net\" {\n  source  = \"terraform-google-modules/network/google\"\n  version = \"9.0.0\"\n}\n"
-	h.gl.diffs[0].Diff = "@@ -0,0 +1,4 @@\n+module \"net\" {\n+  source  = \"terraform-google-modules/network/google\"\n+  version = \"9.0.0\"\n+}\n"
-	h.nar.findings = nil
+	h.gl.files["env/net.tf"] = netModuleTF
+	h.gl.diffs = append(h.gl.diffs, gitlab.FileDiff{OldPath: "env/net.tf", NewPath: "env/net.tf", NewFile: true, Diff: netModuleDiff})
 	if err := h.run(t); err != nil {
 		t.Fatalf("RunCode: %v", err)
 	}
@@ -360,7 +363,20 @@ func TestRunCode_ModulesGoToModuleContext(t *testing.T) {
 	if len(h.nar.in.Modules) != 1 || h.nar.in.Modules[0] != want {
 		t.Errorf("modules = %+v", h.nar.in.Modules)
 	}
-	mustContain(t, h.store.body(t), "_공식 문서 근거를 사용하지 않았습니다._")
+}
+
+// Modules have no documentation lookup, so a modules-only MR is not reviewed.
+func TestRunCode_ModulesOnlySkipsLLM(t *testing.T) {
+	h := newHarness()
+	h.gl.files["env/main.tf"] = netModuleTF
+	h.gl.diffs[0].Diff = netModuleDiff
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	if h.nar.calls != 0 {
+		t.Errorf("LLM called for a modules-only MR")
+	}
+	mustContain(t, h.store.body(t), "문서 근거가 있는 리소스가 없어 AI 리뷰를 하지 않았습니다.", "_공식 문서 근거를 사용하지 않았습니다._")
 }
 
 func TestRunCode_NoTFChangesPostsNothing(t *testing.T) {
@@ -416,7 +432,6 @@ func twoDirHarness() *harness {
 	}
 	h.nar.findings = []model.Finding{
 		{Resource: "a/google_storage_bucket.x", Severity: "낮음", Message: "A_FINDING"},
-		{Resource: "b/google_storage_bucket.x", Severity: "낮음", Message: "B_FINDING"},
 	}
 	return h
 }
@@ -437,21 +452,55 @@ func TestRunCode_ProviderDeclsAndDocsArePerDirectory(t *testing.T) {
 	if err := h.run(t); err != nil {
 		t.Fatalf("RunCode: %v", err)
 	}
+	// b has no doc evidence: it is not sent to the LLM but listed as skipped.
 	res := h.nar.in.Resources
-	if len(res) != 2 || res[0].Address != "a/google_storage_bucket.x" || res[1].Address != "b/google_storage_bucket.x" {
+	if len(res) != 1 || res[0].Address != "a/google_storage_bucket.x" || !strings.Contains(res[0].DocExcerpt, docSecret) {
 		t.Fatalf("resources = %+v", res)
-	}
-	if !strings.Contains(res[0].DocExcerpt, docSecret) || res[1].DocExcerpt != "" {
-		t.Errorf("doc excerpts: a=%q b=%q", res[0].DocExcerpt, res[1].DocExcerpt)
 	}
 	body := h.store.body(t)
 	if !strings.Contains(lineWith(t, body, "A_FINDING"), "/hashicorp/google/6.10.0/") {
 		t.Errorf("a finding lacks its DocRef:\n%s", body)
 	}
-	if strings.Contains(lineWith(t, body, "B_FINDING"), "registry.terraform.io") {
-		t.Errorf("b finding got a DocRef:\n%s", body)
+	mustContain(t, body, "문서 근거 없음, 리뷰 생략: `b/google_storage_bucket.x`", "_근거: 버전 제약 조건에 맞춘")
+}
+
+func TestRunCode_NoDocEvidenceSkipsLLMAndListsResources(t *testing.T) {
+	for name, mutate := range map[string]func(h *harness){
+		"lookup fails": func(h *harness) { h.docs.err = tfdocs.ErrDocNotFound },
+		"no version": func(h *harness) {
+			delete(h.gl.files, "env/.terraform.lock.hcl")
+			h.gl.files["env/versions.tf"] = strings.Replace(versionsTF, "~> 6.0", "~> 5.0", 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness()
+			mutate(h)
+			if err := h.run(t); err != nil {
+				t.Fatalf("RunCode: %v", err)
+			}
+			if h.nar.calls != 0 {
+				t.Errorf("LLM called %d times without doc evidence", h.nar.calls)
+			}
+			mustContain(t, h.store.body(t),
+				"문서 근거가 있는 리소스가 없어 AI 리뷰를 하지 않았습니다.",
+				"문서 근거 없음, 리뷰 생략: `google_storage_bucket.logs`",
+				"| fmt | 통과 | ok |",
+				"_공식 문서 근거를 사용하지 않았습니다._",
+			)
+		})
 	}
-	mustContain(t, body, "_공식 문서 근거를 사용하지 않았습니다._")
+}
+
+func TestRunCode_LLMTextIsCappedAtLLMOutputBytes(t *testing.T) {
+	h := newHarness()
+	h.nar.findings = []model.Finding{{Resource: "google_storage_bucket.logs", Severity: "info", Message: strings.Repeat("가", 3000)}}
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	line := lineWith(t, h.store.body(t), "가가가")
+	if strings.Count(line, "가")*3 > 4000 || !strings.Contains(line, "…") {
+		t.Errorf("finding not capped at 4000 bytes: %d runes", strings.Count(line, "가"))
+	}
 }
 
 func TestReviewAddresses_SameDirUsesFile(t *testing.T) {

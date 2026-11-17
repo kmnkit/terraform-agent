@@ -31,11 +31,13 @@ const (
 var locationPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // Limits are the positive size caps applied to data handed to or from the LLM.
+// LLMOutputBytes caps each LLM-written text (one finding, risk or failure
+// explanation) before it is posted. The plan summary is capped by target
+// count instead (review.maxTargets).
 type Limits struct {
-	DiffBytes        int `json:"diffBytes"`
-	DocsBytes        int `json:"docsBytes"`
-	PlanSummaryBytes int `json:"planSummaryBytes"`
-	LLMOutputBytes   int `json:"llmOutputBytes"`
+	DiffBytes      int `json:"diffBytes"`
+	DocsBytes      int `json:"docsBytes"`
+	LLMOutputBytes int `json:"llmOutputBytes"`
 }
 
 // Waits bounds how long the agent waits for a plan to reach a final state.
@@ -228,10 +230,9 @@ func validateAllowlist(m map[string]string) []error {
 func validateLimits(l Limits) []error {
 	var errs []error
 	for name, v := range map[string]int{
-		"limits.diffBytes":        l.DiffBytes,
-		"limits.docsBytes":        l.DocsBytes,
-		"limits.planSummaryBytes": l.PlanSummaryBytes,
-		"limits.llmOutputBytes":   l.LLMOutputBytes,
+		"limits.diffBytes":      l.DiffBytes,
+		"limits.docsBytes":      l.DocsBytes,
+		"limits.llmOutputBytes": l.LLMOutputBytes,
 	} {
 		if v <= 0 {
 			errs = append(errs, fmt.Errorf("%s must be positive, got %d", name, v))

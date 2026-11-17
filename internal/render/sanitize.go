@@ -3,6 +3,7 @@ package render
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // zeroWidthSpace breaks GitLab mention and quick-action parsing without
@@ -29,14 +30,12 @@ var (
 )
 
 // Sanitize makes LLM output safe to post as an MR note: it neutralizes the
-// text (see neutralize) and truncates to at most maxLen runes (ending in "…"
-// if cut). render neutralizes untrusted text itself, so Sanitize is for callers
-// that also want a length cap; it is idempotent.
-func Sanitize(text string, maxLen int) string {
-	if maxLen <= 0 {
-		return ""
-	}
-	return truncateRunes(strings.TrimSpace(neutralize(text)), maxLen)
+// text (see neutralize) and truncates it to at most maxBytes bytes, ending in
+// "…" if cut and never splitting a rune. render neutralizes untrusted text
+// itself, so Sanitize is for callers that also want a length cap (the review
+// flows apply limits.llmOutputBytes with it); it is idempotent.
+func Sanitize(text string, maxBytes int) string {
+	return truncateBytes(strings.TrimSpace(neutralize(text)), maxBytes)
 }
 
 var lineEndings = strings.NewReplacer("\r\n", "\n", "\r", "\n")
@@ -102,10 +101,16 @@ func stripMarkup(text string) string {
 	}
 }
 
-func truncateRunes(text string, maxLen int) string {
-	runes := []rune(text)
-	if len(runes) <= maxLen {
+func truncateBytes(text string, maxBytes int) string {
+	if len(text) <= maxBytes {
 		return text
 	}
-	return string(runes[:maxLen-1]) + ellipsis
+	cut := maxBytes - len(ellipsis)
+	if cut < 0 {
+		return ""
+	}
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + ellipsis
 }

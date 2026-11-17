@@ -95,10 +95,9 @@ func TestLoad_RequiresAllowedProjectID(t *testing.T) {
 
 func TestLoad_RejectsNonPositiveLimits(t *testing.T) {
 	cases := map[string]string{
-		"diffBytes":        `"diffBytes": 100000`,
-		"docsBytes":        `"docsBytes": 50000`,
-		"planSummaryBytes": `"planSummaryBytes": 20000`,
-		"llmOutputBytes":   `"llmOutputBytes": 8000`,
+		"diffBytes":      `"diffBytes": 100000`,
+		"docsBytes":      `"docsBytes": 50000`,
+		"llmOutputBytes": `"llmOutputBytes": 8000`,
 	}
 	for key, old := range cases {
 		for _, v := range []string{"0", "-5"} {

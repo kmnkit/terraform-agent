@@ -39,8 +39,8 @@ func codeView() CodeReviewView {
 			{Tool: "tflint", Passed: false, Summary: "경고 2건"},
 		},
 		Findings: []model.Finding{
-			{Resource: "google_storage_bucket.logs", Severity: "high", Message: "uniform_bucket_level_access가 꺼져 있습니다.", DocRef: "https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_bucket"},
-			{Resource: "google_project_iam_member.admin", Severity: "medium", Message: "roles/owner 부여는 최소 권한 원칙에 어긋납니다.", DocRef: ""},
+			{Resource: "google_storage_bucket.logs", Severity: "error", Message: "uniform_bucket_level_access가 꺼져 있습니다.", DocRef: "https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_bucket"},
+			{Resource: "google_project_iam_member.admin", Severity: "warning", Message: "roles/owner 부여는 최소 권한 원칙에 어긋납니다.", DocRef: ""},
 		},
 		VersionBasis: "lock",
 	}
@@ -88,6 +88,12 @@ func TestGoldenComments(t *testing.T) {
 
 	planErr := PlanView{Workspace: "prod", SHA: testSHA, Status: PlanError}
 
+	codeSkipped := codeView()
+	codeSkipped.Skipped = []string{"google_compute_network.vpc", "b/google_dns_record_set.www"}
+
+	codeNotReviewed := CodeReviewView{SHA: testSHA, VersionBasis: "none", NotReviewed: true,
+		Skipped: []string{"google_compute_network.vpc"}}
+
 	tests := []struct {
 		name string
 		got  string
@@ -103,6 +109,8 @@ func TestGoldenComments(t *testing.T) {
 		{"plan_timeout_running", Plan(timeoutRunning)},
 		{"plan_unverified", Plan(unverified)},
 		{"plan_error", Plan(planErr)},
+		{"code_review_skipped", CodeReview(codeSkipped)},
+		{"code_review_not_reviewed", CodeReview(codeNotReviewed)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) { assertGolden(t, tc.name, tc.got) })
@@ -134,6 +142,37 @@ func TestPlanUnverifiedAndErrorNeverShowRunURLOrSummary(t *testing.T) {
 				t.Errorf("%s body contains %q:\n%s", status, s, body)
 			}
 		}
+	}
+}
+
+const wantAILabel = "_AI가 작성한 소견으로 참고용입니다._"
+
+// Spec §6: AI output is labeled as reference only, and only where it appears.
+func TestAIOutputIsLabeledReferenceOnly(t *testing.T) {
+	if body := CodeReview(codeView()); strings.Count(body, wantAILabel) != 1 {
+		t.Errorf("code review with findings lacks one label:\n%s", body)
+	}
+	if body := Plan(planView(PlanOK)); strings.Count(body, wantAILabel) != 1 {
+		t.Errorf("plan with risks lacks one label:\n%s", body)
+	}
+	noFindings := codeView()
+	noFindings.Findings = nil
+	noRisks := planView(PlanOK)
+	noRisks.Risks = nil
+	for _, body := range []string{CodeReview(noFindings), Plan(noRisks)} {
+		if strings.Contains(body, wantAILabel) {
+			t.Errorf("label without AI output:\n%s", body)
+		}
+	}
+}
+
+func TestSkippedAddressesAreCodeSpans(t *testing.T) {
+	v := codeView()
+	v.Skipped = []string{"module.a[\"x|y`z\"]", "@alice\n/merge"}
+	body := CodeReview(v)
+	want := "문서 근거 없음, 리뷰 생략: ``module.a[\"x\\|y`z\"]``, `@alice /merge`"
+	if !strings.Contains(body, want+"\n") {
+		t.Fatalf("skipped line not escaped as code spans:\n%s", body)
 	}
 }
 

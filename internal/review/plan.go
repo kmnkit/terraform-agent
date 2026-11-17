@@ -17,8 +17,7 @@ import (
 
 const (
 	// maxTargets caps the plan summary targets handed to the LLM and the body.
-	// Aggregate sets Truncated when it cuts; limits.planSummaryBytes is not
-	// enforced separately (controller ruling R23).
+	// Aggregate sets Truncated when it cuts (controller ruling R23).
 	maxTargets = 100
 	// maxErrorBlockBytes caps the error blocks handed to the LLM. No
 	// config.Limits field is meant for plan logs (diff, docs, plan summary and
@@ -166,7 +165,7 @@ func analyzeChanges(ctx context.Context, d Deps, in input.Input, planID string, 
 		return publishPlanAnalysisFailed(ctx, d, in, view, fmt.Errorf("review: plan risks of workspace %s: %w", view.Workspace, err))
 	}
 	view.Status = render.PlanOK
-	view.Risks = risks
+	view.Risks = capTexts(risks, d.Config.Limits.LLMOutputBytes)
 	return publishPlan(ctx, d, in, view)
 }
 
@@ -188,14 +187,23 @@ func analyzeFailure(ctx context.Context, d Deps, in input.Input, planID string, 
 	if err != nil {
 		return publishFailureUnexplained(ctx, d, in, view, fmt.Errorf("review: plan failure of workspace %s: %w", view.Workspace, err))
 	}
-	view.Failure = text
+	view.Failure = render.Sanitize(text, d.Config.Limits.LLMOutputBytes)
 	return publishPlan(ctx, d, in, view)
+}
+
+// capTexts returns LLM texts capped at maxBytes each (limits.llmOutputBytes).
+func capTexts(texts []string, maxBytes int) []string {
+	out := make([]string, len(texts))
+	for i, t := range texts {
+		out[i] = render.Sanitize(t, maxBytes)
+	}
+	return out
 }
 
 // runURL builds the run link from trusted values only: the fixed HCP address,
 // the configured org and workspace, and a run ID that plan validated.
 func runURL(org, ws, runID string) string {
-	return config.TfeAddress + "/app/" + url.PathEscape(org) + "/" + url.PathEscape(ws) + "/runs/" + runID
+	return config.TfeAddress + "/app/" + url.PathEscape(org) + "/workspaces/" + url.PathEscape(ws) + "/runs/" + runID
 }
 
 // publishFailureUnexplained keeps a failed plan rendered as failed, with the

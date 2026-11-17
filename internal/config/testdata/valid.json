@@ -9,7 +9,7 @@
   "model": "gemini-3.8-flash",
   "vertexProject": "acme-prod",
   "vertexLocation": "asia-northeast3",
-  "limits": {"diffBytes": 100000, "docsBytes": 50000, "planSummaryBytes": 20000, "llmOutputBytes": 8000},
+  "limits": {"diffBytes": 100000, "docsBytes": 50000, "llmOutputBytes": 8000},
   "waits": {"initial": "10m", "total": "16m"},
   "tokenFiles": {"tfe": "/secrets/tfe/token", "gitlab": "/secrets/gitlab/token"}
 }

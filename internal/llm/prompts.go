@@ -10,7 +10,7 @@ const commonRules = `규칙:
 `
 
 const reviewInstruction = `너는 Terraform 코드 리뷰어다. 아래 변경 내용을 검토해 소견을 JSON으로 출력한다.
-` + commonRules + `- 근거는 제공된 문서 발췌에서만 인용한다. 문서 발췌가 없는 리소스는 "문서 근거 없음"이라고 명시한다.
+` + commonRules + `- 근거는 제공된 문서 발췌에서만 인용한다. 문서 발췌로 뒷받침되지 않는 소견은 쓰지 않는다.
 - resource에는 입력에 나온 리소스 주소를 그대로 쓴다.
 - severity는 info, warning, error 중 하나다.
 `

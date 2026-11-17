@@ -82,14 +82,21 @@ func RunCode(ctx context.Context, d Deps, in input.Input) error {
 }
 
 // reviewAndPublish asks the LLM for findings and posts the note, or the
-// analysis-failed variant when the LLM fails.
+// analysis-failed variant when the LLM fails. Without any resource that has
+// documentation evidence there is nothing to review (spec §3): the note is
+// posted without an LLM call.
 func reviewAndPublish(ctx context.Context, d Deps, in input.Input, view render.CodeReviewView,
 	rin llm.ReviewInput, docs map[string]tfdocs.Excerpt) error {
+	if len(rin.Resources) == 0 {
+		d.Log.Info("review: no resource has documentation evidence; skipping the LLM review")
+		view.NotReviewed = true
+		return publishBody(ctx, d, in, view)
+	}
 	findings, llmErr := d.Narrator.ReviewFindings(ctx, rin)
 	if llmErr != nil {
 		return publishAnalysisFailed(ctx, d, in, view, llmErr)
 	}
-	view.Findings = withDocRefs(findings, docs)
+	view.Findings = withDocRefs(findings, docs, d.Config.Limits.LLMOutputBytes)
 	return publishBody(ctx, d, in, view)
 }
 
@@ -106,17 +113,34 @@ func handleNoChanges(ctx context.Context, d Deps, in input.Input, ds diffSet, ch
 }
 
 // prepare reads the provider declarations and docs and builds the view and
-// LLM input.
+// LLM input. Resources without documentation evidence are left out of the
+// LLM input and listed as skipped (spec §3).
 func prepare(ctx context.Context, d Deps, in input.Input, head hclscan.FileReader, ds diffSet,
 	changes hclscan.Changes, checks []model.CheckResult) (render.CodeReviewView, llm.ReviewInput, map[string]tfdocs.Excerpt, error) {
 	decls, err := providerDecls(ctx, head, ds.raw)
 	if err != nil {
 		return render.CodeReviewView{}, llm.ReviewInput{}, nil, err
 	}
-	items := reviewItems(changes.Resources)
-	docs, basis := lookupDocs(ctx, d, head, items, decls)
-	view := render.CodeReviewView{SHA: in.SHA, Checks: checks, Truncated: ds.truncated, VersionBasis: string(basis)}
-	return view, buildInput(items, changes.Modules, ds, docs, checks), docs, nil
+	docs, basis := lookupDocs(ctx, d, head, reviewItems(changes.Resources), decls)
+	reviewed, skipped := splitByDocs(reviewItems(changes.Resources), docs)
+	view := render.CodeReviewView{SHA: in.SHA, Checks: checks, Truncated: ds.truncated,
+		VersionBasis: string(basis), Skipped: skipped}
+	return view, buildInput(reviewed, changes.Modules, ds, docs, checks), docs, nil
+}
+
+// splitByDocs returns the items that have a doc excerpt and the addresses of
+// those that do not, both in item order.
+func splitByDocs(items []reviewItem, docs map[string]tfdocs.Excerpt) ([]reviewItem, []string) {
+	var reviewed []reviewItem
+	var skipped []string
+	for _, it := range items {
+		if _, ok := docs[it.addr]; ok {
+			reviewed = append(reviewed, it)
+		} else {
+			skipped = append(skipped, it.addr)
+		}
+	}
+	return reviewed, skipped
 }
 
 func fetchDiffs(ctx context.Context, d Deps, iid int) (diffSet, error) {
@@ -244,7 +268,8 @@ func readExisting(ctx context.Context, head hclscan.FileReader, paths []string) 
 
 // lookupDocs fetches docs for every non-removed resource, keyed by review
 // address, using the provider declarations of the resource's own directory.
-// It returns the weakest basis among them (none when there are none).
+// It returns the weakest basis among the resources that got docs (none when
+// none did): only those are reviewed, the rest are listed as skipped.
 func lookupDocs(ctx context.Context, d Deps, head hclscan.FileReader, items []reviewItem,
 	decls map[string]hclscan.ProviderDecls) (map[string]tfdocs.Excerpt, tfdocs.Basis) {
 	docs := map[string]tfdocs.Excerpt{}
@@ -254,9 +279,10 @@ func lookupDocs(ctx context.Context, d Deps, head hclscan.FileReader, items []re
 			continue
 		}
 		basis, ex := resourceDoc(ctx, d, head, it, decls[path.Dir(it.rc.File)])
-		if basis != tfdocs.BasisNone {
-			docs[it.addr] = ex
+		if basis == tfdocs.BasisNone {
+			continue
 		}
+		docs[it.addr] = ex
 		if worst == "" || basisRank[basis] < basisRank[worst] {
 			worst = basis
 		}
@@ -269,7 +295,7 @@ func lookupDocs(ctx context.Context, d Deps, head hclscan.FileReader, items []re
 
 // resourceDoc resolves the provider version and looks up docs for one
 // resource. Any failure is logged (address and error only) and yields none,
-// so the review continues without documentation for that resource.
+// so that resource is skipped and the review continues for the others.
 func resourceDoc(ctx context.Context, d Deps, head hclscan.FileReader, it reviewItem,
 	decls hclscan.ProviderDecls) (tfdocs.Basis, tfdocs.Excerpt) {
 	rc := it.rc
@@ -280,7 +306,7 @@ func resourceDoc(ctx context.Context, d Deps, head hclscan.FileReader, it review
 	constraint := decls.Constraints[hclscan.LocalName(rc, rc.ProviderMeta)]
 	ref, basis, err := tfdocs.ResolveVersion(ctx, d.MCP, rc.File, head, ns, name, constraint)
 	if err != nil {
-		d.Log.Warn("review: provider version not resolved; reviewing without docs", "resource", it.addr, "err", err)
+		d.Log.Warn("review: provider version not resolved; skipping resource", "resource", it.addr, "err", err)
 		return tfdocs.BasisNone, tfdocs.Excerpt{}
 	}
 	if ref.Version == "" {
@@ -288,7 +314,7 @@ func resourceDoc(ctx context.Context, d Deps, head hclscan.FileReader, it review
 	}
 	ex, err := d.Docs.Lookup(ctx, d.MCP, ref, rc.Type, rc.ChangedAttrs, d.Config.Limits.DocsBytes)
 	if err != nil {
-		d.Log.Warn("review: doc lookup failed; reviewing without docs", "resource", it.addr, "err", err)
+		d.Log.Warn("review: doc lookup failed; skipping resource", "resource", it.addr, "err", err)
 		return tfdocs.BasisNone, tfdocs.Excerpt{}
 	}
 	return basis, ex
@@ -400,11 +426,13 @@ func buildInput(items []reviewItem, modules []hclscan.ModuleCall, ds diffSet, do
 }
 
 // withDocRefs returns copies of findings with DocRef set from the doc URL
-// known for each finding's resource.
-func withDocRefs(findings []model.Finding, docs map[string]tfdocs.Excerpt) []model.Finding {
+// known for each finding's resource and the message capped at maxBytes
+// (limits.llmOutputBytes).
+func withDocRefs(findings []model.Finding, docs map[string]tfdocs.Excerpt, maxBytes int) []model.Finding {
 	out := make([]model.Finding, len(findings))
 	for i, f := range findings {
 		f.DocRef = docs[f.Resource].DocURL
+		f.Message = render.Sanitize(f.Message, maxBytes)
 		out[i] = f
 	}
 	return out

@@ -26,7 +26,7 @@ func TestBuildReviewPrompt_ContainsInputs(t *testing.T) {
 	for _, want := range []string{
 		"google_storage_bucket.logs", "main.tf", "location", "+ location = \"ASIA\"",
 		"DOC-EXCERPT-SENTINEL", "CHECK-SUMMARY-SENTINEL", "tflint",
-		"terraform-google-modules/network/google", "9.0.0", "한국어", "문서 근거 없음",
+		"terraform-google-modules/network/google", "9.0.0", "한국어", "문서 발췌로 뒷받침되지 않는 소견은 쓰지 않는다",
 		"데이터", "<<<",
 	} {
 		if !strings.Contains(p, want) {

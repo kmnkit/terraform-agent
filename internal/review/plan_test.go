@@ -134,7 +134,7 @@ func runStatus(ws, runID string) gitlab.CommitStatus {
 }
 
 func runURLOf(ws, runID string) string {
-	return "https://app.terraform.io/app/" + tfOrg + "/" + ws + "/runs/" + runID
+	return "https://app.terraform.io/app/" + tfOrg + "/workspaces/" + ws + "/runs/" + runID
 }
 
 type planHarness struct {
@@ -595,6 +595,24 @@ func assertNoForbidden(t *testing.T, surfaces map[string]string, forbidden []str
 			if strings.Contains(text, s) {
 				t.Errorf("%s contains forbidden text %.40q", name, s)
 			}
+		}
+	}
+}
+
+func TestRunPlan_LLMTextIsCappedAtLLMOutputBytes(t *testing.T) {
+	long := strings.Repeat("나", 3000)
+	h := newPlanHarness(wsProd, wsDev)
+	h.nar.risks = []string{long}
+	h.nar.failure = long
+	h.addFinished(wsProd, "run-P1", "plan-p")
+	h.addFailed(wsDev, "run-D1", "plan-d", failedLogFixture)
+	if err := h.runPlan(t); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	for _, ws := range []string{wsProd, wsDev} {
+		line := lineWith(t, h.noteFor(t, ws), "나나나")
+		if strings.Count(line, "나")*3 > 4000 || !strings.Contains(line, "…") {
+			t.Errorf("%s: LLM text not capped at 4000 bytes: %d runes", ws, strings.Count(line, "나"))
 		}
 	}
 }

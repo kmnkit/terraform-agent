@@ -21,7 +21,6 @@
   "limits": {
     "diffBytes": 200000,
     "docsBytes": 60000,
-    "planSummaryBytes": 40000,
     "llmOutputBytes": 8000
   },
   "waits": {

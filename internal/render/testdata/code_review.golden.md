@@ -12,9 +12,11 @@
 
 ### 리뷰 소견
 
+_AI가 작성한 소견으로 참고용입니다._
+
 | 심각도 | 리소스 | 내용 | 문서 |
 | --- | --- | --- | --- |
-| high | `google_storage_bucket.logs` | uniform_bucket_level_access가 꺼져 있습니다. | https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_bucket |
-| medium | `google_project_iam_member.admin` | roles/owner 부여는 최소 권한 원칙에 어긋납니다. |  |
+| error | `google_storage_bucket.logs` | uniform_bucket_level_access가 꺼져 있습니다. | https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_bucket |
+| warning | `google_project_iam_member.admin` | roles/owner 부여는 최소 권한 원칙에 어긋납니다. |  |
 
 _근거: lock 파일의 provider 버전에 맞는 Terraform 공식 문서._

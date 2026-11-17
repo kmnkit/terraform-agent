@@ -35,8 +35,8 @@ const (
 )
 
 // CodeReviewView is the data for a code review comment. render neutralizes all
-// untrusted text itself (check output, finding text); Resource stays in a code
-// span and DocRef is emitted as a plain cell.
+// untrusted text itself (check output, finding text); Resource and Skipped
+// addresses stay in code spans and DocRef is emitted as a plain cell.
 type CodeReviewView struct {
 	SHA            string
 	Checks         []model.CheckResult
@@ -44,6 +44,11 @@ type CodeReviewView struct {
 	Truncated      bool
 	VersionBasis   string // "lock", "constraint" or "none"
 	AnalysisFailed bool
+	// Skipped are the addresses of changed resources without documentation
+	// evidence; they were not reviewed (spec §3).
+	Skipped []string
+	// NotReviewed: no resource had documentation evidence, so no AI review ran.
+	NotReviewed bool
 }
 
 // PlanView is the data for a plan comment. render neutralizes Risks, Failure
@@ -62,18 +67,22 @@ type PlanView struct {
 }
 
 var funcs = template.FuncMap{
-	"marker": Marker,
-	"short":  shortSHA,
-	"code":   codeSpan,
-	"cell":   plainCell,
-	"text":   safeCell,
-	"docref": docRefCell,
-	"line":   safeLine,
-	"attrs":  attrList,
-	"passed": passedLabel,
-	"basis":  basisNote,
-	"is":     func(got, want PlanStatus) bool { return got == want },
+	"marker":  Marker,
+	"short":   shortSHA,
+	"code":    codeSpan,
+	"cell":    plainCell,
+	"text":    safeCell,
+	"docref":  docRefCell,
+	"line":    safeLine,
+	"attrs":   attrList,
+	"passed":  passedLabel,
+	"basis":   basisNote,
+	"is":      func(got, want PlanStatus) bool { return got == want },
+	"ailabel": func() string { return aiLabel },
 }
+
+// aiLabel marks LLM output as reference only (spec §6).
+const aiLabel = "_AI가 작성한 소견으로 참고용입니다._"
 
 var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker "code" "-"}}
 ## Terraform 코드 리뷰
@@ -100,6 +109,8 @@ var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker
 {{end}}
 ### 리뷰 소견
 {{if .Findings}}
+{{ailabel}}
+
 | 심각도 | 리소스 | 내용 | 문서 |
 | --- | --- | --- | --- |
 {{range .Findings -}}
@@ -107,8 +118,13 @@ var codeTmpl = template.Must(template.New(codeKind).Funcs(funcs).Parse(`{{marker
 {{end -}}
 {{else if .AnalysisFailed}}
 소견을 생성하지 못했습니다.
+{{else if .NotReviewed}}
+문서 근거가 있는 리소스가 없어 AI 리뷰를 하지 않았습니다.
 {{else}}
 발견 사항 없음
+{{end}}
+{{- if .Skipped}}
+문서 근거 없음, 리뷰 생략: {{attrs .Skipped}}
 {{end}}
 {{basis .VersionBasis}}
 `))
@@ -153,6 +169,8 @@ workspace: {{code .Workspace}}
 {{end}}
 {{- if .Risks}}
 ### 위험 소견
+
+{{ailabel}}
 
 {{range .Risks -}}
 - {{line .}}
@@ -287,7 +305,7 @@ func longestBacktickRun(s string) int {
 	return longest
 }
 
-// attrList renders attribute names as comma-separated code spans.
+// attrList renders names (attributes, addresses) as comma-separated code spans.
 func attrList(names []string) string {
 	spans := make([]string, len(names))
 	for i, n := range names {

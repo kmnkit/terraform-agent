@@ -31,10 +31,12 @@ func TestSanitize(t *testing.T) {
 		{"marker only", Marker("plan", "prod"), 100, ""},
 		{"marker rebuilt after strip", "<<!-- a -->!-- tf-review:v1:code:- -->", 100, ""},
 		{"plain text untouched", "리소스 삭제 위험", 100, "리소스 삭제 위험"},
-		{"no truncation at limit", "가나다라마", 5, "가나다라마"},
-		{"truncated with ellipsis", "가나다라마바", 5, "가나다라…"},
-		{"truncate keeps runes whole", "😀😀😀😀", 3, "😀😀…"},
-		{"limit one", "abc", 1, "…"},
+		{"no truncation at byte limit", "가나다라마", 15, "가나다라마"},
+		{"truncated with ellipsis in bytes", "가나다라마바", 15, "가나다라…"},
+		{"truncate keeps runes whole", "😀😀😀😀", 11, "😀😀…"},
+		{"truncate backs up to rune start", "😀😀😀😀", 10, "😀…"},
+		{"limit fits only ellipsis", "abcd", 3, "…"},
+		{"limit below ellipsis", "abc", 2, ""},
 		{"limit zero", "abc", 0, ""},
 		{"sftp broken", "sftp://e/x", 100, "sftp:" + zw + "//e/x"},
 		{"ssh broken", "ssh://e/x", 100, "ssh:" + zw + "//e/x"},
@@ -73,8 +75,8 @@ func TestSanitize(t *testing.T) {
 			if !utf8.ValidString(got) {
 				t.Fatalf("invalid UTF-8: %q", got)
 			}
-			if utf8.RuneCountInString(got) > tc.max {
-				t.Fatalf("length %d exceeds %d", utf8.RuneCountInString(got), tc.max)
+			if len(got) > tc.max {
+				t.Fatalf("length %d bytes exceeds %d", len(got), tc.max)
 			}
 		})
 	}

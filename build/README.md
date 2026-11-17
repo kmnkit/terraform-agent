@@ -45,8 +45,7 @@ docker push REGION-docker.pkg.dev/PROJECT/REPO/tf-review:$SHA
 | --- | --- | --- |
 | `diffBytes` | 200000 | 한 MR의 `.tf` 변경분 상한. 일반적인 MR을 담고, 거대 diff가 모델 입력과 비용을 키우지 않게 한다 |
 | `docsBytes` | 60000 | 잘라낸 Terraform 문서 상한. 리소스 문서 한두 건(원문 약 40KB)을 넘지 않는 선 |
-| `planSummaryBytes` | 40000 | plan 요약(주소, action, 변경 attribute 이름)만 담으므로 값이 없어 작게 잡는다 |
-| `llmOutputBytes` | 8000 | MR 코멘트로 읽을 수 있는 길이. GitLab note 한도(1MB)보다 훨씬 작게 둔다 |
+| `llmOutputBytes` | 8000 | LLM이 만든 문장 하나(리뷰 소견, 위험 소견, plan 실패 설명)의 바이트 상한. 넘으면 잘라 "…"로 끝낸다. GitLab note 한도(1MB)보다 훨씬 작게 둔다 |
 | `waits.initial` | 10m | plan run이 나타나기를 기다리는 시간 |
 | `waits.total` | 30m | plan 완료까지 최대 대기. job task timeout 45분, 프로세스 deadline 40분, 예약 8분 기준으로 `30m x workspace 1개 <= 32m`를 만족한다 |
 
