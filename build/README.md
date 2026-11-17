@@ -30,6 +30,21 @@ gcloud builds submit . --config build/cloudbuild.yaml --region REGION \
 - 실행하는 사용자에게 `roles/cloudbuild.builds.editor`를 준다.
 - Cloud Build가 쓰는 서비스 계정(프로젝트 설정에 따라 Compute Engine 기본 SA 또는 Cloud Build SA)에 대상 Artifact Registry 저장소의 `roles/artifactregistry.writer`를 준다.
 
+전용 빌드 SA를 쓰려면 `--service-account`를 지정한다. 지정하지 않으면 기본 SA로 실행된다.
+
+```sh
+gcloud builds submit . --config build/cloudbuild.yaml --region REGION \
+  --service-account "projects/PROJECT/serviceAccounts/BUILD_SA_EMAIL" \
+  --substitutions "_IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/tf-review,_TAG=$SHA"
+```
+
+전용 빌드 SA에 필요한 권한:
+
+- 대상 Artifact Registry 저장소의 `roles/artifactregistry.writer`
+- 프로젝트의 `roles/logging.logWriter` (`cloudbuild.yaml`은 로그를 Cloud Logging에만 남긴다)
+- 소스 업로드 버킷 `gs://PROJECT_cloudbuild`의 `roles/storage.objectViewer` (`gcloud builds submit`이 소스를 이 버킷에 올린다)
+- 실행하는 사용자는 이 SA에 대해 `roles/iam.serviceAccountUser`가 있어야 한다.
+
 업로드 대상: 저장소에 `.gcloudignore`가 없으면 `gcloud`는 `.gitignore` 규칙으로 업로드 대상을 거른다. 따라서 `.mcp.json`, `CLAUDE.md` 등 gitignore된 파일은 올라가지 않는다. 그다음 Docker 빌드 단계에서 `.dockerignore`가 한 번 더 적용된다.
 
 Docker 라이선스를 쓸 수 있는 환경이라면 로컬 빌드도 가능하다: `docker build --platform linux/amd64 -f build/Dockerfile -t tf-review:$SHA .`
