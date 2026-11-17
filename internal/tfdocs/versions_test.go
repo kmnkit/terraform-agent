@@ -174,3 +174,25 @@ func TestResolveVersion_Errors(t *testing.T) {
 		t.Error("want error for unparseable latest version")
 	}
 }
+
+func TestResolveVersion_UnsafeLockVersionIsNone(t *testing.T) {
+	for _, bad := range []string{"1/..)[x](http://evil", "5.0.0 extra", "../../x", "not-a-version", ""} {
+		c := &fakeCaller{replies: map[string]string{ToolLatestProviderVersion: "5.1.0"}}
+		files := fakeFiles{".terraform.lock.hcl": lockFor(bad)}
+		ref, basis, err := ResolveVersion(context.Background(), c, "main.tf", files, "hashicorp", "google", "~> 5.0")
+		if err != nil || basis != BasisNone || ref.Version != "" {
+			t.Errorf("%q: got %+v %q %v", bad, ref, basis, err)
+		}
+		if len(c.calls) != 0 {
+			t.Errorf("%q: MCP called", bad)
+		}
+	}
+}
+
+func TestResolveVersion_LockProviderAddressIsCaseInsensitive(t *testing.T) {
+	files := fakeFiles{".terraform.lock.hcl": `provider "registry.terraform.io/HashiCorp/Google" { version = "5.2.0" }`}
+	ref, basis, err := ResolveVersion(context.Background(), &fakeCaller{}, "main.tf", files, "hashicorp", "google", "")
+	if err != nil || ref.Version != "5.2.0" || basis != BasisLock {
+		t.Errorf("got %+v %q %v", ref, basis, err)
+	}
+}

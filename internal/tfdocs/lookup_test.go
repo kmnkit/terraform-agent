@@ -203,3 +203,34 @@ func TestLookup_ErrorsDoNotLeakDocContentAndAreNotCached(t *testing.T) {
 		t.Errorf("failed lookup was cached: %v", err)
 	}
 }
+
+func TestLookup_KeepsWholeDeprecatedBullet(t *testing.T) {
+	doc := "## Argument Reference\n\n* `old` - (Optional) Does a thing.\n    **Deprecated**: use new.\n* `other` - (Optional) Unrelated.\n"
+	c := &fakeCaller{replies: map[string]string{
+		ToolSearchProviderDocs: "- providerDocID: 1\n- Title: x_thing\n",
+		ToolProviderDetails:    doc,
+	}}
+	ex, err := NewLookuper().Lookup(context.Background(), c, google600, "google_x_thing", []string{"zzz"}, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ex.Text, "* `old` - (Optional) Does a thing.") || !strings.Contains(ex.Text, "use new.") {
+		t.Errorf("bullet name dropped:\n%s", ex.Text)
+	}
+	if strings.Contains(ex.Text, "Unrelated") {
+		t.Error("unrelated bullet included")
+	}
+}
+
+func TestLookup_DuplicateExactTitlesFirstWins(t *testing.T) {
+	c := &fakeCaller{replies: map[string]string{
+		ToolSearchProviderDocs: "- providerDocID: 111\n- Title: x_thing\n---\n- providerDocID: 222\n- Title: x_thing\n",
+		ToolProviderDetails:    "doc",
+	}}
+	if _, err := NewLookuper().Lookup(context.Background(), c, google600, "google_x_thing", nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.calls[1].Args["provider_doc_id"]; got != "111" {
+		t.Errorf("doc id = %v, want first match 111", got)
+	}
+}

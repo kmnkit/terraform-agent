@@ -135,26 +135,42 @@ var bulletName = regexp.MustCompile("^\\* `([^`]+)`")
 
 // excerptText keeps the argument/attribute bullet entries named by attrs
 // (every segment of dotted paths matches) and every line that
-// mentions deprecation, in document order.
+// mentions deprecation, in document order. An entry with any deprecated line is kept whole.
 func excerptText(doc string, attrs []string) string {
 	wanted := wantedNames(attrs)
 	lines := strings.Split(doc, "\n")
-	keep := make([]bool, len(lines))
-	inRef, keepEntry := false, false
+	entryOf := make([]int, len(lines))
+	var keepEntry []bool
+	inRef, cur := false, -1
 	for i, line := range lines {
 		if h, ok := strings.CutPrefix(line, "## "); ok {
 			inRef = h == "Argument Reference" || h == "Attributes Reference"
-			keepEntry = false
+			cur = -1
 		}
 		if strings.HasPrefix(line, "<a name") {
-			keepEntry = false
+			cur = -1
 		}
 		if m := bulletName.FindStringSubmatch(line); m != nil {
-			keepEntry = inRef && wanted[m[1]]
+			cur = -1
+			if inRef {
+				keepEntry = append(keepEntry, wanted[m[1]])
+				cur = len(keepEntry) - 1
+			}
 		}
-		keep[i] = keepEntry || strings.Contains(strings.ToLower(line), "deprecated")
+		entryOf[i] = cur
+		if cur >= 0 && isDeprecated(line) {
+			keepEntry[cur] = true
+		}
+	}
+	keep := make([]bool, len(lines))
+	for i, line := range lines {
+		keep[i] = (entryOf[i] >= 0 && keepEntry[entryOf[i]]) || isDeprecated(line)
 	}
 	return joinKept(lines, keep)
+}
+
+func isDeprecated(line string) bool {
+	return strings.Contains(strings.ToLower(line), "deprecated")
 }
 
 func wantedNames(attrs []string) map[string]bool {

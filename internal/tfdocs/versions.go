@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/go-version"
@@ -26,6 +27,13 @@ const (
 )
 
 const lockFileName = ".terraform.lock.hcl"
+
+// errInvalidLockVersion marks a lock file version that is not a plain version
+// string. The lock file is author-controlled and the version reaches an MCP
+// argument and a published URL, so anything odd is treated as "no version".
+var errInvalidLockVersion = errors.New("tfdocs: lock file version is not a plain version")
+
+var plainVersion = regexp.MustCompile(`^[0-9A-Za-z.+-]+$`)
 
 // Basis says where a resolved provider version came from.
 type Basis string
@@ -53,6 +61,9 @@ func ResolveVersion(ctx context.Context, c tfmcp.Caller, changedFile string, hea
 		return ref, BasisNone, nil
 	}
 	locked, err := lockedVersion(ctx, head, changedFile, namespace, name)
+	if errors.Is(err, errInvalidLockVersion) {
+		return ref, BasisNone, nil
+	}
 	if err != nil {
 		return ref, BasisNone, err
 	}
@@ -120,7 +131,7 @@ func versionInLock(lockPath string, src []byte, namespace, name string) (string,
 	}
 	address := "registry.terraform.io/" + namespace + "/" + name
 	for _, b := range body.Blocks {
-		if b.Type != "provider" || len(b.Labels) != 1 || b.Labels[0] != address {
+		if b.Type != "provider" || len(b.Labels) != 1 || !strings.EqualFold(b.Labels[0], address) {
 			continue
 		}
 		attr, ok := b.Body.Attributes["version"]
@@ -131,7 +142,14 @@ func versionInLock(lockPath string, src []byte, namespace, name string) (string,
 		if d.HasErrors() || !val.IsKnown() || val.IsNull() || val.Type().FriendlyName() != "string" {
 			return "", fmt.Errorf("tfdocs: %s: version of %s is not a string literal", lockPath, address)
 		}
-		return val.AsString(), nil
+		return validLockVersion(val.AsString())
 	}
 	return "", nil
+}
+
+func validLockVersion(s string) (string, error) {
+	if _, err := version.NewVersion(s); err != nil || !plainVersion.MatchString(s) {
+		return "", errInvalidLockVersion
+	}
+	return s, nil
 }
