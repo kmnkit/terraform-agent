@@ -77,9 +77,32 @@ func TestReviewFindings_HappyPath(t *testing.T) {
 	}
 	req := f.onlyRequest(t)
 	requireStructured(t, req, "findings")
-	if !strings.Contains(req.Contents[0].Parts[0].Text, "DOC-EXCERPT-SENTINEL") {
-		t.Error("prompt not forwarded to model")
+	if len(req.Contents) != 1 || len(req.Contents[0].Parts) != 1 {
+		t.Fatalf("want one user message with one part: %+v", req.Contents)
 	}
+	data := req.Contents[0].Parts[0].Text
+	if !strings.Contains(data, "DOC-EXCERPT-SENTINEL") || strings.Contains(data, "<OBJECTIVE_AND_PERSONA>") {
+		t.Errorf("user message must carry the data blocks only:\n%s", data)
+	}
+	sys := systemText(req)
+	// The JSON example survives verbatim: no session-state templating on {...}.
+	if !strings.Contains(sys, "<OBJECTIVE_AND_PERSONA>") || !strings.Contains(sys, reviewExampleOutput) {
+		t.Errorf("system instruction missing or mangled:\n%s", sys)
+	}
+	if strings.Contains(sys, "DOC-EXCERPT-SENTINEL") || strings.Contains(sys, "CHECK-SUMMARY-SENTINEL") {
+		t.Error("untrusted text in system instruction")
+	}
+}
+
+func systemText(req *model.LLMRequest) string {
+	if req.Config == nil || req.Config.SystemInstruction == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range req.Config.SystemInstruction.Parts {
+		b.WriteString(p.Text)
+	}
+	return b.String()
 }
 
 func TestPlanRisks_HappyPath(t *testing.T) {
@@ -89,7 +112,11 @@ func TestPlanRisks_HappyPath(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0] != "DB 삭제" {
 		t.Fatalf("got %v err %v", got, err)
 	}
-	requireStructured(t, f.onlyRequest(t), "risks")
+	req := f.onlyRequest(t)
+	requireStructured(t, req, "risks")
+	if !strings.Contains(systemText(req), planRisksExampleOutput) {
+		t.Error("risks system instruction missing or mangled")
+	}
 }
 
 func TestPlanFailure_HappyPath(t *testing.T) {
@@ -98,7 +125,11 @@ func TestPlanFailure_HappyPath(t *testing.T) {
 	if err != nil || got != "API 비활성" {
 		t.Fatalf("got %q err %v", got, err)
 	}
-	requireStructured(t, f.onlyRequest(t), "analysis")
+	req := f.onlyRequest(t)
+	requireStructured(t, req, "analysis")
+	if !strings.Contains(systemText(req), planFailureExampleOutput) {
+		t.Error("failure system instruction missing or mangled")
+	}
 }
 
 func TestNarrator_LLMErrorWrappedWithoutPrompt(t *testing.T) {

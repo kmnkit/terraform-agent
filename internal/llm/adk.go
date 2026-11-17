@@ -122,12 +122,17 @@ func (n adkNarrator) PlanFailure(ctx context.Context, blocks []string) (string, 
 }
 
 // generate runs one tool-less agent turn in a fresh in-memory session and
-// returns the final response text. Errors never include prompt or response text.
-func (n adkNarrator) generate(ctx context.Context, prompt string, schema *genai.Schema) (string, error) {
+// returns the final response text. p.Instruction becomes the system
+// instruction and p.Data the only user message. Errors never include prompt
+// or response text.
+func (n adkNarrator) generate(ctx context.Context, p Prompt, schema *genai.Schema) (string, error) {
 	temp := temperature
 	a, err := llmagent.New(llmagent.Config{
-		Name:                  "narrator",
-		Model:                 n.llm,
+		Name:  "narrator",
+		Model: n.llm,
+		// InstructionProvider, unlike Instruction, skips ADK session-state
+		// templating of {...}, so the JSON examples reach the model verbatim.
+		InstructionProvider:   func(agent.ReadonlyContext) (string, error) { return p.Instruction, nil },
 		OutputSchema:          schema,
 		GenerateContentConfig: &genai.GenerateContentConfig{Temperature: &temp, MaxOutputTokens: maxOutputTokens},
 	})
@@ -143,7 +148,7 @@ func (n adkNarrator) generate(ctx context.Context, prompt string, schema *genai.
 	if err != nil {
 		return "", fmt.Errorf("llm: create session: %w", err)
 	}
-	msg := genai.NewContentFromText(prompt, genai.RoleUser)
+	msg := genai.NewContentFromText(p.Data, genai.RoleUser)
 	var final strings.Builder
 	for ev, err := range r.Run(ctx, userID, created.Session.ID(), msg, agent.RunConfig{MaxLLMCalls: maxLLMCalls}) {
 		if err != nil {

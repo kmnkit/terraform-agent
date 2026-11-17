@@ -76,25 +76,32 @@ func block(nonce, label, body string) string {
 	return fmt.Sprintf("%sDATA-%s %s\n%s\n%sEND-%s\n", blockOpen, nonce, label, body, blockOpen, nonce)
 }
 
-// BuildReviewPrompt renders the review prompt from in with a fresh nonce.
-func BuildReviewPrompt(in ReviewInput) string { return buildReviewPrompt(in, newNonce()) }
+// Prompt is one model request. Instruction is the system instruction: fixed
+// text plus the request nonce, never untrusted input. Data is the user
+// message: every untrusted input sits inside a nonce-bearing block.
+type Prompt struct {
+	Instruction string
+	Data        string
+}
 
-func buildReviewPrompt(in ReviewInput, nonce string) string {
+// BuildReviewPrompt renders the review prompt from in with a fresh nonce.
+func BuildReviewPrompt(in ReviewInput) Prompt { return buildReviewPrompt(in, newNonce()) }
+
+func buildReviewPrompt(in ReviewInput, nonce string) Prompt {
 	var b strings.Builder
-	b.WriteString(withNonce(reviewInstruction, nonce))
 	if in.DiffTruncated {
-		b.WriteString("\n注意: diff は切り詰められており、一部のみ提供される。\n")
+		b.WriteString("注意: diff は切り詰められており、一部のみ提供される。\n\n")
 	}
 	for _, r := range in.Resources {
-		b.WriteString("\n" + resourceSection(nonce, r))
+		b.WriteString(resourceSection(nonce, r) + "\n")
 	}
 	for _, m := range in.Modules {
-		b.WriteString("\n" + block(nonce, "module", fmt.Sprintf("name=%s source=%s version=%s", m.Name, m.Source, m.Version)))
+		b.WriteString(block(nonce, "module", fmt.Sprintf("name=%s source=%s version=%s", m.Name, m.Source, m.Version)) + "\n")
 	}
 	for _, c := range in.Checks {
-		b.WriteString("\n" + block(nonce, "check", fmt.Sprintf("tool=%s passed=%t\n%s", c.Tool, c.Passed, c.Summary)))
+		b.WriteString(block(nonce, "check", fmt.Sprintf("tool=%s passed=%t\n%s", c.Tool, c.Passed, c.Summary)) + "\n")
 	}
-	return b.String()
+	return Prompt{Instruction: withNonce(reviewInstruction, nonce), Data: b.String()}
 }
 
 func resourceSection(nonce string, r ReviewResource) string {
@@ -118,33 +125,31 @@ func resourceSection(nonce string, r ReviewResource) string {
 
 // BuildPlanRisksPrompt renders the plan risk prompt from addresses, actions
 // and attribute names only.
-func BuildPlanRisksPrompt(s model.PlanSummary) string { return buildPlanRisksPrompt(s, newNonce()) }
+func BuildPlanRisksPrompt(s model.PlanSummary) Prompt { return buildPlanRisksPrompt(s, newNonce()) }
 
-func buildPlanRisksPrompt(s model.PlanSummary, nonce string) string {
+func buildPlanRisksPrompt(s model.PlanSummary, nonce string) Prompt {
 	var b strings.Builder
-	b.WriteString(withNonce(planRisksInstruction, nonce))
-	fmt.Fprintf(&b, "\n合計: add=%d change=%d destroy=%d replace=%d\n", s.Add, s.Change, s.Destroy, s.Replace)
+	fmt.Fprintf(&b, "合計: add=%d change=%d destroy=%d replace=%d\n", s.Add, s.Change, s.Destroy, s.Replace)
 	if s.Truncated {
 		b.WriteString("注意: 一覧は切り詰められており、一部のみ提供される。\n")
 	}
 	for _, t := range s.Targets {
 		b.WriteString(block(nonce, "target", fmt.Sprintf("address=%s action=%s attrs=%s", t.Address, t.Action, strings.Join(t.Attrs, ","))))
 	}
-	return b.String()
+	return Prompt{Instruction: withNonce(planRisksInstruction, nonce), Data: b.String()}
 }
 
 // BuildPlanFailurePrompt renders the plan failure prompt from error blocks.
-func BuildPlanFailurePrompt(blocks []string) string {
+func BuildPlanFailurePrompt(blocks []string) Prompt {
 	return buildPlanFailurePrompt(blocks, newNonce())
 }
 
-func buildPlanFailurePrompt(blocks []string, nonce string) string {
+func buildPlanFailurePrompt(blocks []string, nonce string) Prompt {
 	var b strings.Builder
-	b.WriteString(withNonce(planFailureInstruction, nonce) + "\n")
 	for _, e := range blocks {
 		b.WriteString(block(nonce, "error", e))
 	}
-	return b.String()
+	return Prompt{Instruction: withNonce(planFailureInstruction, nonce), Data: b.String()}
 }
 
 // decodeResponse enforces the raw size cap, strips one surrounding ```json
