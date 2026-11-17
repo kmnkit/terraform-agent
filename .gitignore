@@ -34,3 +34,5 @@ go.work.sum
 
 .mcp.json
 CLAUDE.md
+# macOS Finder metadata
+.DS_Store
