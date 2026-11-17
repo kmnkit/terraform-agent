@@ -7,7 +7,7 @@
   "output_changes": {"pw": {"actions": ["create"], "after": "SUPERSECRET-AFTER"}},
   "resource_changes": [
     {"address": "google_storage_bucket.logs", "change": {"actions": ["create"], "before": null,
-      "after": {"name": "logs", "location": "ASIA", "labels": {"k": "SUPERSECRET-AFTER"}},
+      "after": {"name": "logs", "location": "ASIA", "labels": {"k": "SUPERSECRET-AFTER", "SUPERSECRET-KEY": "x"}},
       "after_unknown": {"id": true, "url": true, "name": false}}},
     {"address": "google_sql_user.u", "change": {"actions": ["update"],
       "before": {"name": "u", "password": "SUPERSECRET-BEFORE", "host": "h"},

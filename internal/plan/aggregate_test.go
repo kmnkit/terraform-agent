@@ -27,7 +27,7 @@ func TestAggregateNoValuesLeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{"SUPERSECRET-PRIOR", "SUPERSECRET-BEFORE", "SUPERSECRET-AFTER", "SUPERSECRET-VAR"} {
+	for _, s := range []string{"SUPERSECRET-PRIOR", "SUPERSECRET-BEFORE", "SUPERSECRET-AFTER", "SUPERSECRET-VAR", "SUPERSECRET-KEY"} {
 		if strings.Contains(string(out), s) {
 			t.Fatalf("summary leaks %s: %s", s, out)
 		}
@@ -80,6 +80,28 @@ func TestAggregateInvalidJSONErrorHasNoPayload(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "SUPERSECRET") {
 		t.Fatalf("error leaks payload: %v", err)
+	}
+}
+
+func TestAggregateNegativeMaxTargets(t *testing.T) {
+	sum, err := Aggregate(loadPlan(t), -1)
+	if err != nil || len(sum.Targets) != 0 || !sum.Truncated || sum.Add != 1 {
+		t.Fatalf("sum=%+v err=%v", sum, err)
+	}
+}
+
+func TestAggregateNestedAfterUnknownAndNumbers(t *testing.T) {
+	js := `{"resource_changes":[{"address":"a.b","change":{"actions":["update"],
+	  "before":{"big":12345678901234567890,"same":{"x":[1,2]}},
+	  "after":{"big":12345678901234567891,"same":{"x":[1,2]}},
+	  "after_unknown":{"nested":{"deep":[{"id":true}]},"known":{"x":false},"top":true}}}]}`
+	sum, err := Aggregate([]byte(js), 5)
+	if err != nil || len(sum.Targets) != 1 {
+		t.Fatalf("sum=%+v err=%v", sum, err)
+	}
+	got := strings.Join(sum.Targets[0].Attrs, ",")
+	if got != "big,nested,top" {
+		t.Fatalf("attrs = %s, want big,nested,top", got)
 	}
 }
 

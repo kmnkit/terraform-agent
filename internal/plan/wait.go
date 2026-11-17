@@ -2,7 +2,6 @@ package plan
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -77,6 +76,10 @@ func (RealClock) Sleep(ctx context.Context, d time.Duration) error {
 
 // Wait finds the run (phase 1, bounded by w.Initial) and then polls it until
 // it is finished or failed (phase 2, bounded by w.Total from the start).
+// Every poll verifies the run's workspace, org and commit SHA against src and
+// fails closed, so no state is returned for a run that is not ours. On
+// ErrTimeout the last observed state is returned so callers can tell queued
+// from running.
 func Wait(ctx context.Context, ss StatusSource, c tfmcp.Caller, src Source, w config.Waits, clock Clock) (RunState, error) {
 	start := clock.Now()
 	ref, err := findRunWithin(ctx, ss, src, w.Initial, start, clock)
@@ -84,20 +87,30 @@ func Wait(ctx context.Context, ss StatusSource, c tfmcp.Caller, src Source, w co
 		return RunState{}, err
 	}
 	for {
-		st, err := runState(ctx, c, ref)
+		st, err := runState(ctx, c, src, ref)
 		if err != nil {
 			return RunState{}, err
 		}
 		if st.Phase == PhaseFinished || st.Phase == PhaseFailed {
 			return st, nil
 		}
-		if clock.Now().Sub(start) >= w.Total {
-			return RunState{}, ErrTimeout
-		}
-		if err := clock.Sleep(ctx, pollInterval); err != nil {
+		if err := sleepWithin(ctx, clock, start, w.Total); err != nil {
+			if errors.Is(err, ErrTimeout) {
+				return st, err
+			}
 			return RunState{}, err
 		}
 	}
+}
+
+// sleepWithin sleeps min(pollInterval, remaining) and returns ErrTimeout when
+// limit has already elapsed since start.
+func sleepWithin(ctx context.Context, clock Clock, start time.Time, limit time.Duration) error {
+	remaining := limit - clock.Now().Sub(start)
+	if remaining <= 0 {
+		return ErrTimeout
+	}
+	return clock.Sleep(ctx, min(pollInterval, remaining))
 }
 
 func findRunWithin(ctx context.Context, ss StatusSource, src Source, initial time.Duration, start time.Time, clock Clock) (RunRef, error) {
@@ -109,22 +122,25 @@ func findRunWithin(ctx context.Context, ss StatusSource, src Source, initial tim
 		if ref, ok := FindRun(statuses, src); ok {
 			return ref, nil
 		}
-		if clock.Now().Sub(start) >= initial {
-			return RunRef{}, ErrNoPlan
-		}
-		if err := clock.Sleep(ctx, pollInterval); err != nil {
+		if err := sleepWithin(ctx, clock, start, initial); err != nil {
+			if errors.Is(err, ErrTimeout) {
+				return RunRef{}, ErrNoPlan
+			}
 			return RunRef{}, err
 		}
 	}
 }
 
-func runState(ctx context.Context, c tfmcp.Caller, ref RunRef) (RunState, error) {
+func runState(ctx context.Context, c tfmcp.Caller, src Source, ref RunRef) (RunState, error) {
 	out, err := c.Call(ctx, ToolGetRunDetails, map[string]any{runDetailsRunIDParam: ref.RunID})
 	if err != nil {
 		return RunState{}, fmt.Errorf("plan: get run details: %w", err)
 	}
 	d, err := parseRunDetails(out)
 	if err != nil {
+		return RunState{}, err
+	}
+	if err := d.verify(src, ref); err != nil {
 		return RunState{}, err
 	}
 	if d.status == "" {
@@ -147,68 +163,4 @@ func phaseOf(status string) Phase {
 		return PhaseFailed
 	}
 	return PhaseRunning
-}
-
-type runInfo struct {
-	status string
-	planID string
-	sha    string
-}
-
-// parseRunDetails reads a run payload.
-// PROVISIONAL (Phase 0 B): assumes JSON:API with data.attributes.status,
-// data.relationships.plan.data.id and the commit SHA in data.attributes
-// ["commit-sha"] or in an included ingress-attributes/configuration-versions
-// entry. Errors never include the payload.
-func parseRunDetails(payload string) (runInfo, error) {
-	var doc struct {
-		Data struct {
-			Attributes    map[string]any `json:"attributes"`
-			Relationships struct {
-				Plan struct {
-					Data struct {
-						ID string `json:"id"`
-					} `json:"data"`
-				} `json:"plan"`
-			} `json:"relationships"`
-		} `json:"data"`
-		Included []struct {
-			Type       string         `json:"type"`
-			Attributes map[string]any `json:"attributes"`
-		} `json:"included"`
-	}
-	if err := json.Unmarshal([]byte(payload), &doc); err != nil {
-		return runInfo{}, errors.New("plan: run details are not valid JSON")
-	}
-	d := runInfo{planID: doc.Data.Relationships.Plan.Data.ID}
-	d.status, _ = doc.Data.Attributes["status"].(string)
-	d.sha, _ = doc.Data.Attributes["commit-sha"].(string)
-	for _, inc := range doc.Included {
-		if d.sha != "" {
-			break
-		}
-		if inc.Type == "ingress-attributes" || inc.Type == "configuration-versions" {
-			d.sha, _ = inc.Attributes["commit-sha"].(string)
-		}
-	}
-	return d, nil
-}
-
-// VerifyRunSHA fails closed: it errors when the run's commit SHA is missing
-// or differs from wantSHA.
-func VerifyRunSHA(runDetails string, wantSHA string) error {
-	if wantSHA == "" {
-		return errors.New("plan: expected commit SHA is empty")
-	}
-	d, err := parseRunDetails(runDetails)
-	if err != nil {
-		return err
-	}
-	if d.sha == "" {
-		return errors.New("plan: run commit SHA not found")
-	}
-	if d.sha != wantSHA {
-		return errors.New("plan: run commit SHA does not match MR head")
-	}
-	return nil
 }

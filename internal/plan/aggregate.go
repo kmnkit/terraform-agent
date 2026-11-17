@@ -42,6 +42,7 @@ func Aggregate(planJSON []byte, maxTargets int) (model.PlanSummary, error) {
 		targets = append(targets, model.Target{Address: rc.Address, Action: action, Attrs: changedAttrs(rc)})
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].Address < targets[j].Address })
+	maxTargets = max(maxTargets, 0)
 	if len(targets) > maxTargets {
 		targets = targets[:maxTargets]
 		sum.Truncated = true
@@ -95,7 +96,7 @@ func changedAttrs(rc resourceChange) []string {
 		}
 	}
 	for k, v := range rc.Change.AfterUnknown {
-		if string(bytes.TrimSpace(v)) == "true" {
+		if containsTrue(v) {
 			names[k] = struct{}{}
 		}
 	}
@@ -118,10 +119,45 @@ func sameJSON(a, b json.RawMessage) bool {
 	return bytes.Equal(ca, cb)
 }
 
+// canonical re-marshals with UseNumber so large integers keep full precision.
 func canonical(raw json.RawMessage) ([]byte, error) {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
+	v, err := decodeNumbers(raw)
+	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(v)
+}
+
+func decodeNumbers(raw json.RawMessage) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	err := dec.Decode(&v)
+	return v, err
+}
+
+// containsTrue reports whether an after_unknown value is true at any depth.
+func containsTrue(raw json.RawMessage) bool {
+	v, err := decodeNumbers(raw)
+	return err == nil && anyTrue(v)
+}
+
+func anyTrue(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case map[string]any:
+		for _, e := range t {
+			if anyTrue(e) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range t {
+			if anyTrue(e) {
+				return true
+			}
+		}
+	}
+	return false
 }

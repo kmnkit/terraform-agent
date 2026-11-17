@@ -11,11 +11,13 @@ import (
 	"github.com/terraform-agent/internal/gitlab"
 )
 
-// Source pins which HCP Terraform runs are trusted.
+// Source pins which HCP Terraform runs are trusted. WantSHA is the MR head
+// commit every trusted run must have been created from.
 type Source struct {
 	Host       string
 	Org        string
 	Workspaces []string
+	WantSHA    string
 }
 
 // RunRef points at one trusted HCP run. StatusState is the GitLab commit
@@ -31,13 +33,25 @@ var runIDPattern = regexp.MustCompile(`^run-[A-Za-z0-9]+$`)
 // FindRun returns the first status whose target_url is a trusted run URL.
 // PROVISIONAL (Phase 0 B): the GitLab API is assumed to return statuses
 // newest first, so the first match in slice order is the latest run.
+//
+// The status name check is defense in depth only: GitLab statuses can be
+// forged, so the real gate is the run-details binding done in Wait (workspace,
+// org and commit SHA read from HCP itself).
 func FindRun(statuses []gitlab.CommitStatus, src Source) (RunRef, bool) {
 	for _, s := range statuses {
-		if ws, id, ok := parseRunURL(s.TargetURL, src); ok {
-			return RunRef{Workspace: ws, RunID: id, StatusState: s.Status}, true
+		ws, id, ok := parseRunURL(s.TargetURL, src)
+		if !ok || !statusNameMatches(s.Name, src.Org, ws) {
+			continue
 		}
+		return RunRef{Workspace: ws, RunID: id, StatusState: s.Status}, true
 	}
 	return RunRef{}, false
+}
+
+// statusNameMatches accepts an empty name, or exactly "Terraform Cloud/<org>/<ws>".
+// PROVISIONAL (Phase 0 B): the real HCP status context name is unverified.
+func statusNameMatches(name, org, ws string) bool {
+	return name == "" || name == "Terraform Cloud/"+org+"/"+ws
 }
 
 // parseRunURL accepts only the two URL forms below, matched exactly.

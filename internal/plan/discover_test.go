@@ -9,6 +9,7 @@ import (
 )
 
 type statusFixture struct {
+	Case      string `json:"case"`
 	Name      string `json:"name"`
 	Status    string `json:"status"`
 	TargetURL string `json:"target_url"`
@@ -35,11 +36,11 @@ func loadStatuses(t *testing.T) []statusFixture {
 	return out
 }
 
-var testSource = Source{Host: "app.terraform.io", Org: "acme", Workspaces: []string{"net-prod", "net-dev"}}
+var testSource = Source{Host: "app.terraform.io", Org: "acme", Workspaces: []string{"net-prod", "net-dev"}, WantSHA: "abc123"}
 
 func TestFindRunEachFixture(t *testing.T) {
 	for _, f := range loadStatuses(t) {
-		t.Run(f.Name, func(t *testing.T) {
+		t.Run(f.Case, func(t *testing.T) {
 			ref, ok := FindRun([]gitlab.CommitStatus{f.status()}, testSource)
 			if ok != f.OK {
 				t.Fatalf("ok = %v, want %v (ref %+v)", ok, f.OK, ref)

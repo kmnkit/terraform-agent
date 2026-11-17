@@ -71,6 +71,51 @@ func TestExtractErrorBlocksNone(t *testing.T) {
 	}
 }
 
+func TestExtractErrorBlocksIgnoresMidLineMarker(t *testing.T) {
+	log := "  # google_x.y will be created\n" +
+		"  + resource \"google_x\" \"y\" {\n" +
+		"      + documentation = \"Error: high latency\"\n" +
+		"      + password      = \"SUPERSECRET-VALUE\"\n" +
+		"    }\n\n" +
+		"Plan: 1 to add\n"
+	if got := ExtractErrorBlocks(log, 1000); len(got) != 0 {
+		t.Fatalf("blocks = %q", got)
+	}
+}
+
+func TestExtractErrorBlocksIgnoresWarningBox(t *testing.T) {
+	log := "╷\n" +
+		"│ Warning: Deprecated argument\n" +
+		"│ \n" +
+		"│ Error: this is only quoted detail\n" +
+		"│ SUPERSECRET-VALUE\n" +
+		"╵\n" +
+		"╷\n" +
+		"│ Error: Real\n" +
+		"│ real detail\n" +
+		"╵\n"
+	got := ExtractErrorBlocks(log, 1000)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "Error: Real") || strings.Contains(got[0], "SUPERSECRET") {
+		t.Fatalf("blocks = %q", got)
+	}
+}
+
+func TestExtractErrorBlocksJSONLogNeverFallsBackToText(t *testing.T) {
+	log := `{"@level":"info","@message":"plan"}` + "\n" +
+		"Error: plain text inside json log\nSUPERSECRET-VALUE\n\n"
+	if got := ExtractErrorBlocks(log, 1000); len(got) != 0 {
+		t.Fatalf("blocks = %q", got)
+	}
+}
+
+func TestExtractErrorBlocksStripsOSC(t *testing.T) {
+	log := "\x1b]8;;http://evil\x07Error: linked\x1b]8;;\x07 text\n\n"
+	got := ExtractErrorBlocks(log, 1000)
+	if len(got) != 1 || got[0] != "Error: linked text" {
+		t.Fatalf("blocks = %q", got)
+	}
+}
+
 func TestExtractErrorBlocksJSONLines(t *testing.T) {
 	log := `{"@level":"info","@message":"Terraform 1.9"}` + "\n" +
 		`{"@level":"error","@message":"Error: x","diagnostic":{"severity":"error","summary":"Bad thing","detail":"because"}}` + "\n"

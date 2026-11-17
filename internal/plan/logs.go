@@ -7,30 +7,33 @@ import (
 	"unicode/utf8"
 )
 
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+// ansiPattern matches CSI sequences and OSC sequences (BEL or ST terminated).
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
 
 const (
-	errorMarker = "Error: "
+	errorPrefix = "Error: "
+	boxTop      = "╷"
 	boxOpen     = "│"
 	boxClose    = "╵"
 )
 
 // ExtractErrorBlocks returns the error blocks of a plan log, at most
 // maxBytes in total (cut on a rune boundary, later blocks dropped).
-// PROVISIONAL (Phase 0 B): the real HCP plan log format is unverified. JSON
-// lines with @level "error" are used when present, otherwise boxed or
-// blank-line-terminated text blocks.
+// PROVISIONAL (Phase 0 B): the real HCP plan log format is unverified. If the
+// log is a JSON-lines log (any line with an "@level"), only JSON error
+// diagnostics are used and text is never parsed. Otherwise a block starts only
+// at a line that begins with "Error: " (after an optional box prefix), so
+// plan-diff lines and Warning boxes can never open one.
 func ExtractErrorBlocks(log string, maxBytes int) []string {
 	lines := strings.Split(ansiPattern.ReplaceAllString(log, ""), "\n")
-	blocks := jsonErrorBlocks(lines)
-	if len(blocks) == 0 {
+	blocks, isJSONLog := jsonErrorBlocks(lines)
+	if !isJSONLog {
 		blocks = textErrorBlocks(lines)
 	}
 	return fitBytes(blocks, maxBytes)
 }
 
-func jsonErrorBlocks(lines []string) []string {
-	var blocks []string
+func jsonErrorBlocks(lines []string) (blocks []string, isJSONLog bool) {
 	for _, l := range lines {
 		l = strings.TrimSpace(l)
 		if !strings.HasPrefix(l, "{") {
@@ -43,40 +46,43 @@ func jsonErrorBlocks(lines []string) []string {
 				Detail  string `json:"detail"`
 			} `json:"diagnostic"`
 		}
-		if json.Unmarshal([]byte(l), &e) != nil || e.Level != "error" {
+		if json.Unmarshal([]byte(l), &e) != nil || e.Level == "" {
 			continue
 		}
-		block := strings.TrimSpace(e.Diagnostic.Summary + "\n" + e.Diagnostic.Detail)
-		if block != "" {
+		isJSONLog = true
+		if block := strings.TrimSpace(e.Diagnostic.Summary + "\n" + e.Diagnostic.Detail); e.Level == "error" && block != "" {
 			blocks = append(blocks, block)
 		}
 	}
-	return blocks
+	return blocks, isJSONLog
 }
 
+// textErrorBlocks scans text lines. Boxed blocks end at "╵"; unboxed blocks
+// end at a blank line. Any other box (for example Warning) is skipped whole.
 func textErrorBlocks(lines []string) []string {
 	var blocks, cur []string
-	boxed := false
-	flush := func() {
-		if len(cur) > 0 {
-			blocks = append(blocks, strings.TrimSpace(strings.Join(cur, "\n")))
-		}
-		cur, boxed = nil, false
-	}
+	boxed, skipping := false, false
 	for _, l := range lines {
 		switch {
-		case len(cur) == 0:
-			if strings.Contains(l, errorMarker) {
-				boxed = strings.HasPrefix(l, boxOpen)
-				cur = append(cur, unbox(l))
+		case len(cur) > 0:
+			if (boxed && strings.HasPrefix(l, boxClose)) || (!boxed && strings.TrimSpace(l) == "") {
+				blocks = append(blocks, strings.TrimSpace(strings.Join(cur, "\n")))
+				cur = nil
+				continue
 			}
-		case boxed && strings.HasPrefix(l, boxClose), !boxed && strings.TrimSpace(l) == "":
-			flush()
-		default:
 			cur = append(cur, unbox(l))
+		case skipping:
+			skipping = !strings.HasPrefix(l, boxClose)
+		case strings.HasPrefix(unbox(l), errorPrefix):
+			boxed = strings.HasPrefix(l, boxOpen)
+			cur = []string{unbox(l)}
+		case strings.HasPrefix(l, boxOpen):
+			skipping = true
 		}
 	}
-	flush()
+	if len(cur) > 0 {
+		blocks = append(blocks, strings.TrimSpace(strings.Join(cur, "\n")))
+	}
 	return blocks
 }
 
