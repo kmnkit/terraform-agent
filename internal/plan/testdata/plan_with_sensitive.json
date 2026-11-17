@@ -1,0 +1,27 @@
+{
+  "format_version": "1.2",
+  "variables": {"db_password": {"value": "SUPERSECRET-VAR"}},
+  "prior_state": {"values": {"root_module": {"resources": [{"address": "google_sql_user.u", "values": {"password": "SUPERSECRET-PRIOR"}}]}}},
+  "planned_values": {"root_module": {"resources": [{"address": "google_sql_user.u", "values": {"password": "SUPERSECRET-AFTER"}}]}},
+  "configuration": {"root_module": {"variables": {"db_password": {"default": "SUPERSECRET-VAR"}}}},
+  "output_changes": {"pw": {"actions": ["create"], "after": "SUPERSECRET-AFTER"}},
+  "resource_changes": [
+    {"address": "google_storage_bucket.logs", "change": {"actions": ["create"], "before": null,
+      "after": {"name": "logs", "location": "ASIA", "labels": {"k": "SUPERSECRET-AFTER"}},
+      "after_unknown": {"id": true, "url": true, "name": false}}},
+    {"address": "google_sql_user.u", "change": {"actions": ["update"],
+      "before": {"name": "u", "password": "SUPERSECRET-BEFORE", "host": "h"},
+      "after": {"name": "u", "password": "SUPERSECRET-AFTER", "host": "h"},
+      "after_unknown": {}}},
+    {"address": "google_compute_instance.old", "change": {"actions": ["delete"],
+      "before": {"name": "old", "metadata": {"secret": "SUPERSECRET-BEFORE"}}, "after": null, "after_unknown": {}}},
+    {"address": "google_compute_disk.d", "change": {"actions": ["delete", "create"],
+      "before": {"size": 10, "type": "pd-ssd"}, "after": {"size": 20, "type": "pd-ssd"}, "after_unknown": {"id": true}}},
+    {"address": "google_compute_network.n", "change": {"actions": ["create", "delete"],
+      "before": {"name": "n"}, "after": {"name": "n2"}, "after_unknown": {}}},
+    {"address": "google_project_service.s", "change": {"actions": ["no-op"],
+      "before": {"service": "x"}, "after": {"service": "x"}, "after_unknown": {}}},
+    {"address": "data.google_project.p", "change": {"actions": ["read"],
+      "before": null, "after": {"number": "SUPERSECRET-AFTER"}, "after_unknown": {}}}
+  ]
+}
