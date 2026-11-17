@@ -83,6 +83,17 @@ func IsPublicRegistry(namespace string) bool {
 	return !strings.Contains(namespace, "/")
 }
 
+// LocalName returns the resource's local provider name, the key of
+// ProviderDecls: providerMetaArg without any alias suffix, else the resource
+// type prefix up to the first "_".
+func LocalName(rc ResourceChange, providerMetaArg string) string {
+	local, _, _ := strings.Cut(providerMetaArg, ".")
+	if local == "" {
+		local, _, _ = strings.Cut(rc.Type, "_")
+	}
+	return local
+}
+
 // ProviderFor maps a resource to its provider's registry namespace and name.
 // The local name is providerMetaArg without any alias suffix, else the
 // resource type prefix up to the first "_". A declared source wins; otherwise
@@ -90,10 +101,7 @@ func IsPublicRegistry(namespace string) bool {
 // namespace contains the host ("host/namespace"); callers must use
 // IsPublicRegistry to decide whether to skip it.
 func ProviderFor(rc ResourceChange, providerMetaArg string, decls ProviderDecls) (namespace, name string) {
-	local, _, _ := strings.Cut(providerMetaArg, ".")
-	if local == "" {
-		local, _, _ = strings.Cut(rc.Type, "_")
-	}
+	local := LocalName(rc, providerMetaArg)
 	src, ok := decls.Sources[local]
 	if !ok {
 		return "hashicorp", local

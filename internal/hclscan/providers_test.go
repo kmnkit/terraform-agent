@@ -97,3 +97,17 @@ func TestProviderFor(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalName(t *testing.T) {
+	tests := []struct{ typ, meta, want string }{
+		{"google_storage_bucket", "", "google"},
+		{"google_storage_bucket", "google-beta", "google-beta"},
+		{"google_storage_bucket", "google.west", "google"},
+		{"random", "", "random"},
+	}
+	for _, tt := range tests {
+		if got := LocalName(ResourceChange{Type: tt.typ}, tt.meta); got != tt.want {
+			t.Errorf("LocalName(%q, %q) = %q, want %q", tt.typ, tt.meta, got, tt.want)
+		}
+	}
+}

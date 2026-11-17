@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -38,8 +39,18 @@ type diffSet struct {
 	collapsed int
 }
 
+// reviewItem is one changed resource with its review address, which is unique
+// across the MR (see reviewAddresses). Docs, DocRefs and LLM knownAddrs are
+// all keyed by it, so equal type.name pairs in different files never mix.
+type reviewItem struct {
+	rc   hclscan.ResourceChange
+	addr string
+}
+
 // RunCode reviews the MR's Terraform changes and upserts the code review note.
-// An MR without resource or module changes gets no note and no LLM call.
+// An MR without .tf changes gets no note and no LLM call. If nothing was
+// detected only because GitLab collapsed .tf diffs, a truncation-only note is
+// posted without an LLM call.
 func RunCode(ctx context.Context, d Deps, in input.Input) error {
 	ds, err := fetchDiffs(ctx, d, in.MRIID)
 	if err != nil {
@@ -51,9 +62,7 @@ func RunCode(ctx context.Context, d Deps, in input.Input) error {
 		return fmt.Errorf("review: scan changes: %w", err)
 	}
 	if len(changes.Resources) == 0 && len(changes.Modules) == 0 {
-		d.Log.Info("review: no terraform resource or module changes; nothing to post",
-			"collapsedTfDiffs", ds.collapsed)
-		return nil
+		return handleNoChanges(ctx, d, in, ds)
 	}
 	d.Log.Info("review: changes detected", "resources", len(changes.Resources), "modules", len(changes.Modules))
 	view, rin, docs, err := prepare(ctx, d, in, head, ds, changes)
@@ -68,20 +77,38 @@ func RunCode(ctx context.Context, d Deps, in input.Input) error {
 	return publishBody(ctx, d, in, view)
 }
 
-// prepare gathers docs and static checks and builds the view and LLM input.
+// handleNoChanges posts nothing when no .tf diff was collapsed; otherwise it
+// posts the truncation notice with static checks and no findings.
+func handleNoChanges(ctx context.Context, d Deps, in input.Input, ds diffSet) error {
+	if ds.collapsed == 0 {
+		d.Log.Info("review: no terraform resource or module changes; nothing to post")
+		return nil
+	}
+	d.Log.Info("review: only collapsed .tf diffs; posting truncation notice", "collapsedTfDiffs", ds.collapsed)
+	checks, err := staticChecks(ctx, d, in.PipelineID)
+	if err != nil {
+		return err
+	}
+	view := render.CodeReviewView{SHA: in.SHA, Checks: checks, Truncated: true, VersionBasis: string(tfdocs.BasisNone)}
+	return publishBody(ctx, d, in, view)
+}
+
+// prepare reads static checks first (no MCP traffic is spent if that fails),
+// then docs, and builds the view and LLM input.
 func prepare(ctx context.Context, d Deps, in input.Input, head hclscan.FileReader, ds diffSet,
 	changes hclscan.Changes) (render.CodeReviewView, llm.ReviewInput, map[string]tfdocs.Excerpt, error) {
-	decls, err := providerDecls(ctx, head, ds.raw)
-	if err != nil {
-		return render.CodeReviewView{}, llm.ReviewInput{}, nil, err
-	}
-	docs, basis := lookupDocs(ctx, d, head, changes.Resources, decls)
 	checks, err := staticChecks(ctx, d, in.PipelineID)
 	if err != nil {
 		return render.CodeReviewView{}, llm.ReviewInput{}, nil, err
 	}
+	decls, err := providerDecls(ctx, head, ds.raw)
+	if err != nil {
+		return render.CodeReviewView{}, llm.ReviewInput{}, nil, err
+	}
+	items := reviewItems(changes.Resources)
+	docs, basis := lookupDocs(ctx, d, head, items, decls)
 	view := render.CodeReviewView{SHA: in.SHA, Checks: checks, Truncated: ds.truncated, VersionBasis: string(basis)}
-	return view, buildInput(changes, ds, docs, checks), docs, nil
+	return view, buildInput(items, changes.Modules, ds, docs, checks), docs, nil
 }
 
 func fetchDiffs(ctx context.Context, d Deps, iid int) (diffSet, error) {
@@ -93,9 +120,9 @@ func fetchDiffs(ctx context.Context, d Deps, iid int) (diffSet, error) {
 }
 
 // capDiffs spends the byte budget over .tf diffs only, once per file. Scanning
-// still uses the raw diffs: a diff cut mid-hunk would hide resources. A
-// modified .tf file with an empty diff was collapsed by GitLab, so it also
-// counts as truncated (a pure rename without changes does not).
+// still uses the raw diffs: a diff cut mid-hunk would hide resources. Any .tf
+// file with an empty diff is treated as collapsed by GitLab, so it counts as
+// truncated.
 func capDiffs(raw []gitlab.FileDiff, limit int) diffSet {
 	out := diffSet{raw: raw, excerpts: map[string]string{}}
 	budget := limit
@@ -104,7 +131,7 @@ func capDiffs(raw []gitlab.FileDiff, limit int) diffSet {
 		if !strings.HasSuffix(p, ".tf") {
 			continue
 		}
-		if fd.Diff == "" && !fd.NewFile && !fd.DeletedFile && !fd.RenamedFile {
+		if fd.Diff == "" {
 			out.truncated = true
 			out.collapsed++
 			continue
@@ -152,61 +179,75 @@ func (h headReader) ReadFile(ctx context.Context, p string) ([]byte, error) {
 	return b, err
 }
 
-// providerDecls parses required_providers from the changed .tf files and the
-// conventional files beside them; missing files are skipped.
-func providerDecls(ctx context.Context, head hclscan.FileReader, diffs []gitlab.FileDiff) (hclscan.ProviderDecls, error) {
-	files := map[string][]byte{}
-	for _, p := range declPaths(diffs) {
-		src, err := head.ReadFile(ctx, p)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
+// providerDecls parses required_providers per directory (a Terraform root or
+// module): the changed .tf files there plus the conventional files beside
+// them. Missing files are skipped. The result is keyed by directory.
+func providerDecls(ctx context.Context, head hclscan.FileReader,
+	diffs []gitlab.FileDiff) (map[string]hclscan.ProviderDecls, error) {
+	out := map[string]hclscan.ProviderDecls{}
+	for dir, paths := range declPathsByDir(diffs) {
+		files, err := readExisting(ctx, head, paths)
 		if err != nil {
-			return hclscan.ProviderDecls{}, fmt.Errorf("review: read %s: %w", p, err)
+			return nil, err
 		}
-		files[p] = src
+		decls, err := hclscan.ParseProviderDecls(files)
+		if err != nil {
+			return nil, fmt.Errorf("review: provider declarations in %s: %w", dir, err)
+		}
+		out[dir] = decls
 	}
-	decls, err := hclscan.ParseProviderDecls(files)
-	if err != nil {
-		return hclscan.ProviderDecls{}, fmt.Errorf("review: provider declarations: %w", err)
-	}
-	return decls, nil
+	return out, nil
 }
 
-func declPaths(diffs []gitlab.FileDiff) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(p string) {
-		if !seen[p] {
-			seen[p] = true
-			out = append(out, p)
-		}
-	}
+func declPathsByDir(diffs []gitlab.FileDiff) map[string][]string {
+	out := map[string][]string{}
 	for _, fd := range diffs {
 		if fd.DeletedFile || !strings.HasSuffix(fd.NewPath, ".tf") {
 			continue
 		}
-		add(fd.NewPath)
-		for _, name := range conventionalFiles {
-			add(path.Join(path.Dir(fd.NewPath), name))
+		dir := path.Dir(fd.NewPath)
+		if _, ok := out[dir]; !ok {
+			for _, name := range conventionalFiles {
+				out[dir] = append(out[dir], path.Join(dir, name))
+			}
+		}
+		if !slices.Contains(out[dir], fd.NewPath) {
+			out[dir] = append(out[dir], fd.NewPath)
 		}
 	}
 	return out
 }
 
-// lookupDocs fetches docs for every non-removed resource, keyed by address,
-// and returns the weakest basis among them (none when there are none).
-func lookupDocs(ctx context.Context, d Deps, head hclscan.FileReader, rcs []hclscan.ResourceChange,
-	decls hclscan.ProviderDecls) (map[string]tfdocs.Excerpt, tfdocs.Basis) {
-	docs := map[string]tfdocs.Excerpt{}
-	var worst tfdocs.Basis
-	for _, rc := range rcs {
-		if rc.Removed {
+// readExisting reads paths at head, skipping files that do not exist.
+func readExisting(ctx context.Context, head hclscan.FileReader, paths []string) (map[string][]byte, error) {
+	files := map[string][]byte{}
+	for _, p := range paths {
+		src, err := head.ReadFile(ctx, p)
+		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
-		basis, ex := resourceDoc(ctx, d, head, rc, decls)
+		if err != nil {
+			return nil, fmt.Errorf("review: read %s: %w", p, err)
+		}
+		files[p] = src
+	}
+	return files, nil
+}
+
+// lookupDocs fetches docs for every non-removed resource, keyed by review
+// address, using the provider declarations of the resource's own directory.
+// It returns the weakest basis among them (none when there are none).
+func lookupDocs(ctx context.Context, d Deps, head hclscan.FileReader, items []reviewItem,
+	decls map[string]hclscan.ProviderDecls) (map[string]tfdocs.Excerpt, tfdocs.Basis) {
+	docs := map[string]tfdocs.Excerpt{}
+	var worst tfdocs.Basis
+	for _, it := range items {
+		if it.rc.Removed {
+			continue
+		}
+		basis, ex := resourceDoc(ctx, d, head, it, decls[path.Dir(it.rc.File)])
 		if basis != tfdocs.BasisNone {
-			docs[address(rc)] = ex
+			docs[it.addr] = ex
 		}
 		if worst == "" || basisRank[basis] < basisRank[worst] {
 			worst = basis
@@ -221,16 +262,17 @@ func lookupDocs(ctx context.Context, d Deps, head hclscan.FileReader, rcs []hcls
 // resourceDoc resolves the provider version and looks up docs for one
 // resource. Any failure is logged (address and error only) and yields none,
 // so the review continues without documentation for that resource.
-func resourceDoc(ctx context.Context, d Deps, head hclscan.FileReader, rc hclscan.ResourceChange,
+func resourceDoc(ctx context.Context, d Deps, head hclscan.FileReader, it reviewItem,
 	decls hclscan.ProviderDecls) (tfdocs.Basis, tfdocs.Excerpt) {
+	rc := it.rc
 	ns, name := hclscan.ProviderFor(rc, rc.ProviderMeta, decls)
 	if !hclscan.IsPublicRegistry(ns) {
 		return tfdocs.BasisNone, tfdocs.Excerpt{}
 	}
-	constraint := decls.Constraints[providerLocalName(rc)]
+	constraint := decls.Constraints[hclscan.LocalName(rc, rc.ProviderMeta)]
 	ref, basis, err := tfdocs.ResolveVersion(ctx, d.MCP, rc.File, head, ns, name, constraint)
 	if err != nil {
-		d.Log.Warn("review: provider version not resolved; reviewing without docs", "resource", address(rc), "err", err)
+		d.Log.Warn("review: provider version not resolved; reviewing without docs", "resource", it.addr, "err", err)
 		return tfdocs.BasisNone, tfdocs.Excerpt{}
 	}
 	if ref.Version == "" {
@@ -238,22 +280,53 @@ func resourceDoc(ctx context.Context, d Deps, head hclscan.FileReader, rc hclsca
 	}
 	ex, err := d.Docs.Lookup(ctx, d.MCP, ref, rc.Type, rc.ChangedAttrs, d.Config.Limits.DocsBytes)
 	if err != nil {
-		d.Log.Warn("review: doc lookup failed; reviewing without docs", "resource", address(rc), "err", err)
+		d.Log.Warn("review: doc lookup failed; reviewing without docs", "resource", it.addr, "err", err)
 		return tfdocs.BasisNone, tfdocs.Excerpt{}
 	}
 	return basis, ex
 }
 
-// providerLocalName mirrors the local-name rule of hclscan.ProviderFor (which
-// does not return it): the provider meta-argument without its alias suffix,
-// else the resource type prefix up to the first "_". It keys
-// ProviderDecls.Constraints.
-func providerLocalName(rc hclscan.ResourceChange) string {
-	local, _, _ := strings.Cut(rc.ProviderMeta, ".")
-	if local == "" {
-		local, _, _ = strings.Cut(rc.Type, "_")
+func reviewItems(rcs []hclscan.ResourceChange) []reviewItem {
+	addrs := reviewAddresses(rcs)
+	items := make([]reviewItem, len(rcs))
+	for i, rc := range rcs {
+		items[i] = reviewItem{rc: rc, addr: addrs[i]}
 	}
-	return local
+	return items
+}
+
+// reviewAddresses returns an MR-unique address per resource (parallel to
+// rcs): plain type.name when only one file has it, else "<dir>/type.name"
+// when those files are in distinct directories, else "<file>:type.name".
+func reviewAddresses(rcs []hclscan.ResourceChange) []string {
+	filesByAddr := map[string]map[string]bool{}
+	for _, rc := range rcs {
+		a := address(rc)
+		if filesByAddr[a] == nil {
+			filesByAddr[a] = map[string]bool{}
+		}
+		filesByAddr[a][rc.File] = true
+	}
+	out := make([]string, len(rcs))
+	for i, rc := range rcs {
+		out[i] = uniqueAddress(rc, filesByAddr[address(rc)])
+	}
+	return out
+}
+
+func uniqueAddress(rc hclscan.ResourceChange, files map[string]bool) string {
+	a := address(rc)
+	if len(files) <= 1 {
+		return a
+	}
+	dirs := map[string]bool{}
+	for f := range files {
+		dirs[path.Dir(f)] = true
+	}
+	if len(dirs) == len(files) {
+		return path.Dir(rc.File) + "/" + a
+	}
+	return rc.File + ":" + a
 }
 
 func address(rc hclscan.ResourceChange) string {
@@ -299,18 +372,20 @@ func staticJobID(jobs []gitlab.Job) (int64, bool) {
 	return id, id != 0
 }
 
-func buildInput(ch hclscan.Changes, ds diffSet, docs map[string]tfdocs.Excerpt,
+// buildInput uses the review addresses, so the narrator's knownAddrs (built
+// from Resources) and the DocRef fill share one key space.
+func buildInput(items []reviewItem, modules []hclscan.ModuleCall, ds diffSet, docs map[string]tfdocs.Excerpt,
 	checks []model.CheckResult) llm.ReviewInput {
-	res := make([]llm.ReviewResource, 0, len(ch.Resources))
-	for _, rc := range ch.Resources {
-		ex := docs[address(rc)]
+	res := make([]llm.ReviewResource, 0, len(items))
+	for _, it := range items {
+		ex := docs[it.addr]
 		res = append(res, llm.ReviewResource{
-			Address: address(rc), File: rc.File, ChangedAttrs: rc.ChangedAttrs, Removed: rc.Removed,
-			DiffExcerpt: ds.excerpts[rc.File], DocExcerpt: ex.Text, DocTruncated: ex.Truncated,
+			Address: it.addr, File: it.rc.File, ChangedAttrs: it.rc.ChangedAttrs, Removed: it.rc.Removed,
+			DiffExcerpt: ds.excerpts[it.rc.File], DocExcerpt: ex.Text, DocTruncated: ex.Truncated,
 		})
 	}
-	mods := make([]llm.ModuleContext, 0, len(ch.Modules))
-	for _, m := range ch.Modules {
+	mods := make([]llm.ModuleContext, 0, len(modules))
+	for _, m := range modules {
 		mods = append(mods, llm.ModuleContext{Name: m.Name, Source: m.Source, Version: m.Version})
 	}
 	return llm.ReviewInput{Resources: res, Modules: mods, Checks: checks, DiffTruncated: ds.truncated}

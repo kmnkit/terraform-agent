@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/terraform-agent/internal/config"
 	"github.com/terraform-agent/internal/gitlab"
+	"github.com/terraform-agent/internal/hclscan"
 	"github.com/terraform-agent/internal/input"
 	"github.com/terraform-agent/internal/llm"
 	"github.com/terraform-agent/internal/model"
@@ -294,6 +296,9 @@ func TestRunCode_NormalPathCreatesOneNoteAndRerunKeepsOne(t *testing.T) {
 		t.Fatalf("RunCode rerun: %v", err)
 	}
 	h.store.body(t)
+	if h.store.notes[0].ID != 101 {
+		t.Errorf("note ID = %d after rerun, want 101", h.store.notes[0].ID)
+	}
 }
 
 func TestRunCode_ReviewInputContents(t *testing.T) {
@@ -346,6 +351,108 @@ func TestRunCode_NoTFChangesPostsNothing(t *testing.T) {
 	}
 	if h.store.calls != 0 || h.nar.calls != 0 {
 		t.Errorf("notes calls = %d, narrator calls = %d; want 0, 0", h.store.calls, h.nar.calls)
+	}
+}
+
+func TestRunCode_CollapsedNewFileIsMarkedTruncated(t *testing.T) {
+	h := newHarness()
+	h.gl.files["env/new.tf"] = "resource \"google_storage_bucket\" \"new\" {\n  location = \"EU\"\n}\n"
+	h.gl.diffs = append(h.gl.diffs, gitlab.FileDiff{OldPath: "env/new.tf", NewPath: "env/new.tf", NewFile: true})
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	mustContain(t, h.store.body(t), "> 변경이 커서 일부만 검토했습니다.")
+}
+
+func TestRunCode_AllDiffsCollapsedPostsTruncationWithoutLLM(t *testing.T) {
+	h := newHarness()
+	h.gl.diffs = []gitlab.FileDiff{{OldPath: "env/main.tf", NewPath: "env/main.tf"}}
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	if h.nar.calls != 0 {
+		t.Errorf("narrator called %d times, want 0", h.nar.calls)
+	}
+	mustContain(t, h.store.body(t), "> 변경이 커서 일부만 검토했습니다.", "발견 사항 없음")
+}
+
+// twoDirHarness has the same address in dirs a/ and b/ with different
+// constraints and no lock files: a resolves (6.10.0 satisfies ~> 6.0), b does
+// not (~> 5.0).
+func twoDirHarness() *harness {
+	h := newHarness()
+	res := "resource \"google_storage_bucket\" \"x\" {\n  location = \"EU\"\n}\n"
+	diff := "@@ -0,0 +1,3 @@\n+resource \"google_storage_bucket\" \"x\" {\n+  location = \"EU\"\n+}\n"
+	h.gl.files = map[string]string{
+		"a/main.tf": res, "a/versions.tf": versionsTF,
+		"b/main.tf": res, "b/versions.tf": strings.Replace(versionsTF, "~> 6.0", "~> 5.0", 1),
+	}
+	h.gl.diffs = []gitlab.FileDiff{
+		{OldPath: "a/main.tf", NewPath: "a/main.tf", NewFile: true, Diff: diff},
+		{OldPath: "b/main.tf", NewPath: "b/main.tf", NewFile: true, Diff: diff},
+	}
+	h.nar.findings = []model.Finding{
+		{Resource: "a/google_storage_bucket.x", Severity: "낮음", Message: "A_FINDING"},
+		{Resource: "b/google_storage_bucket.x", Severity: "낮음", Message: "B_FINDING"},
+	}
+	return h
+}
+
+func lineWith(t *testing.T, body, needle string) string {
+	t.Helper()
+	for _, l := range strings.Split(body, "\n") {
+		if strings.Contains(l, needle) {
+			return l
+		}
+	}
+	t.Fatalf("no line with %q:\n%s", needle, body)
+	return ""
+}
+
+func TestRunCode_ProviderDeclsAndDocsArePerDirectory(t *testing.T) {
+	h := twoDirHarness()
+	if err := h.run(t); err != nil {
+		t.Fatalf("RunCode: %v", err)
+	}
+	res := h.nar.in.Resources
+	if len(res) != 2 || res[0].Address != "a/google_storage_bucket.x" || res[1].Address != "b/google_storage_bucket.x" {
+		t.Fatalf("resources = %+v", res)
+	}
+	if !strings.Contains(res[0].DocExcerpt, docSecret) || res[1].DocExcerpt != "" {
+		t.Errorf("doc excerpts: a=%q b=%q", res[0].DocExcerpt, res[1].DocExcerpt)
+	}
+	body := h.store.body(t)
+	if !strings.Contains(lineWith(t, body, "A_FINDING"), "/hashicorp/google/6.10.0/") {
+		t.Errorf("a finding lacks its DocRef:\n%s", body)
+	}
+	if strings.Contains(lineWith(t, body, "B_FINDING"), "registry.terraform.io") {
+		t.Errorf("b finding got a DocRef:\n%s", body)
+	}
+	mustContain(t, body, "_공식 문서 근거를 사용하지 않았습니다._")
+}
+
+func TestReviewAddresses_SameDirUsesFile(t *testing.T) {
+	rcs := []hclscan.ResourceChange{
+		{File: "a/one.tf", Type: "t_x", Name: "n"},
+		{File: "a/two.tf", Type: "t_x", Name: "n"},
+		{File: "a/one.tf", Type: "t_y", Name: "n"},
+	}
+	got := reviewAddresses(rcs)
+	want := []string{"a/one.tf:t_x.n", "a/two.tf:t_x.n", "t_y.n"}
+	if !slices.Equal(got, want) {
+		t.Errorf("addresses = %v, want %v", got, want)
+	}
+}
+
+func TestRunCode_LLMErrorWithStaleHeadReturnsLLMError(t *testing.T) {
+	h := newHarness()
+	h.nar.err = errors.New("model unavailable")
+	h.store.sha = "ffffffffffffffffffffffffffffffffffffffff"
+	if err := h.run(t); !errors.Is(err, h.nar.err) {
+		t.Fatalf("err = %v, want wrapped LLM error", err)
+	}
+	if len(h.store.notes) != 0 {
+		t.Errorf("stale run wrote notes")
 	}
 }
 
